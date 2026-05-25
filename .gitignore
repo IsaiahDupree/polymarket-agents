@@ -1,0 +1,55 @@
+# ---- Dependencies ----
+node_modules
+.pnp
+.pnp.*
+.yarn/install-state.gz
+
+# ---- Build artifacts ----
+.next
+out
+dist
+build
+
+# ---- Secrets / env (NEVER COMMIT) ----
+.env
+.env.*
+!.env.local.example
+*.pem
+*.key
+secrets/
+credentials/
+.credentials.json
+
+# ---- Local databases (may contain user-identifying data) ----
+*.db
+*.sqlite
+*.sqlite3
+*-journal
+*-shm
+*-wal
+data/
+
+# ---- Local sweep + worker output ----
+docs/test-results.json
+
+# ---- Test/coverage output ----
+coverage/
+.vitest/
+.nyc_output/
+*.lcov
+
+# ---- IDE / OS ----
+.DS_Store
+.vscode/
+.idea/
+Thumbs.db
+~$*
+*.swp
+*.swo
+
+# ---- Logs ----
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
