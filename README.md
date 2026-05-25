@@ -123,6 +123,23 @@ upgrade.
 - `POST /api/strategies/:id/promote` `{versionId}`    — flip is_current + log a `promotion` event
 - `POST /api/strategies/:id/retire`                   — mark a strategy retired + log it
 
+## Tests
+
+```bash
+npm run test:run            # full offline suite (~933 tests, ~4s)
+npm run test:coverage       # with v8 coverage report
+RUN_E2E=1 npm run test:e2e  # opt-in: hits live Gamma, Data, CLOB, Polygon RPC, Claude OAuth
+```
+
+| Suite | Files | Tests | Notes |
+|---|---|---|---|
+| Unit — signals/arb/lp/sign/onchain/auth/client | `tests/unit/*` | 800+ | Parameterized via `it.each` |
+| Integration — schema, queries, executor safety | `tests/integration/*` | 60+ | In-memory SQLite per test |
+| Contract — mocked Polymarket fetch responses | `tests/contract/*` | 50+ | Asserts URLs, headers, parsed shapes |
+| E2E — live network (opt-in, `RUN_E2E=1`) | `tests/e2e/*` | 8 | One per major surface |
+
+If a test fails in CI, it's a real regression — the suite is green locally and contains no flaky live calls by default.
+
 ## Security notes
 
 - `.env.local` is gitignored. **Never commit your private key.**

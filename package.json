@@ -23,6 +23,10 @@
     "arb:comb": "tsx scripts/comb-arb-runner.ts",
     "arb:comb:llm": "tsx scripts/comb-arb-runner-llm.ts",
     "test:oauth": "tsx scripts/test-oauth.ts",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "RUN_E2E=1 vitest run tests/e2e",
     "onchain:watch": "tsx scripts/onchain-watch.ts",
     "backfill:wallet": "tsx scripts/backfill-wallet.ts"
   },
@@ -44,11 +48,13 @@
     "@types/node": "^22.10.5",
     "@types/react": "19.0.7",
     "@types/react-dom": "19.0.3",
+    "@vitest/coverage-v8": "^3.2.4",
     "autoprefixer": "^10.4.20",
     "dotenv": "^16.4.7",
     "postcss": "^8.5.1",
     "tailwindcss": "^3.4.17",
     "tsx": "^4.19.2",
-    "typescript": "5.7.3"
+    "typescript": "5.7.3",
+    "vitest": "^3.2.4"
   }
 }
