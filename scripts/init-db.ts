@@ -22,6 +22,27 @@ ensureColumn("capsules", "paper_agent_id", "paper_agent_id INTEGER REFERENCES pa
 // future wallet-copy-filtered) can route by category dominance. NULL = not
 // yet classified.
 ensureColumn("market_snapshots", "category", "category TEXT");
+
+// llm_call_log — every call to the LLM probability oracle gets logged here
+// (cache hits + misses). Budget guard sums today's cost_usd to refuse calls
+// once the daily cap is hit. PRD lunar-inspired §6.5 + Phase 6.
+handle.exec(`
+  CREATE TABLE IF NOT EXISTS llm_call_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    model TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    market_id TEXT,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cost_usd REAL NOT NULL DEFAULT 0,
+    called_at TEXT NOT NULL DEFAULT (datetime('now')),
+    caller_agent_id INTEGER,
+    cache_hit INTEGER NOT NULL DEFAULT 0,
+    response_json TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_llm_call_log_called_at ON llm_call_log(called_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_llm_call_log_market_id ON llm_call_log(market_id, called_at DESC);
+`);
 // entries_count tracks the count of ENTRY trades (one bump per applySignal
 // entry). trades_count continues to count round-trips (bumps on exit), so
 // win-rate denominators stay correct. Both columns are tracked because the

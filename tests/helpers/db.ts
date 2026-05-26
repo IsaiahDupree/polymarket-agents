@@ -25,6 +25,21 @@ export function makeMemoryDb(): Database.Database {
   ensureColumn(db, "capsules", "paper_agent_id", "paper_agent_id INTEGER REFERENCES paper_agents(id)");
   ensureColumn(db, "paper_agents", "entries_count", "entries_count INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "market_snapshots", "category", "category TEXT");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS llm_call_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      model TEXT NOT NULL,
+      prompt_version TEXT NOT NULL,
+      market_id TEXT,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      cost_usd REAL NOT NULL DEFAULT 0,
+      called_at TEXT NOT NULL DEFAULT (datetime('now')),
+      caller_agent_id INTEGER,
+      cache_hit INTEGER NOT NULL DEFAULT 0,
+      response_json TEXT
+    );
+  `);
   // Also create the tracked_wallets + wallet_fills tables that live outside the main schema file
   db.exec(`
     CREATE TABLE IF NOT EXISTS tracked_wallets (

@@ -17,6 +17,7 @@ import { buildLiveTickContext } from "../src/lib/arena/context.ts";
 import { runEvolveOnce } from "../src/lib/arena/evolve.ts";
 import { findLiveCapsuleForPaperAgent, refreshCapsuleRealtime, routeArenaSignal, supportsLiveRouting } from "../src/lib/arena/live-capsule.ts";
 import { applyRiskRails } from "../src/lib/arena/risk-wrapper.ts";
+import { warmOracleCacheForTick } from "../src/lib/arena/oracle-warmer.ts";
 
 const EVOLVE_EVERY = Number(process.env.ARENA_EVOLVE_EVERY ?? "50");
 
@@ -36,6 +37,18 @@ const EVOLVE_EVERY = Number(process.env.ARENA_EVOLVE_EVERY ?? "50");
   const agents = listAliveAgentsForGen(gen.gen_number).map(toLiveAgent);
   const rng = Math.random;
   const stats = { decided: 0, entries: 0, exits: 0, holds: 0, live_fills: 0, live_rejects: 0, ev_kelly_engaged: 0, ev_kelly_blocked: 0, ev_kelly_resized: 0 };
+
+  // Warm the LLM oracle cache once before the per-agent decide loop. Inert
+  // unless ARENA_LLM_ORACLE_ENABLED=1 + at least one llm_probability_oracle
+  // agent is alive. Single call per tick keeps cost bounded.
+  const warmResult = await warmOracleCacheForTick(agents, ctx);
+  if (warmResult.attempted) {
+    if (warmResult.result) {
+      console.log(`arena:tick → oracle warmed ${warmResult.market_id?.slice(0, 12)}… p=${warmResult.result.probability.toFixed(2)} (${warmResult.result.confidence})`);
+    } else {
+      console.log(`arena:tick → oracle warm skipped: ${warmResult.reason}`);
+    }
+  }
 
   for (const agent of agents) {
     try {

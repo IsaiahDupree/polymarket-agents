@@ -9,6 +9,9 @@
  */
 import { acceleration, loadRecentCandles, velocity } from "./momentum";
 import { recentFillsForWalletInCategory, walletWinRateByCategory } from "@/lib/wallet/category-stats";
+import { peekOracleCache } from "./llm-oracle";
+import { checkBudget } from "./llm-oracle-budget";
+import { oracleEnabled } from "./oracle-warmer";
 import type { LiveAgent, Snapshot, TickContext } from "./types";
 
 export type DiagStatus = "in-position" | "would-enter" | "watching" | "no-data";
@@ -198,6 +201,31 @@ export function diagnoseAgent(agent: LiveAgent, ctx: TickContext): AgentDiagnost
         status: "would-enter",
         label: `wr=${(stats.win_rate * 100).toFixed(0)}% · ${fills.length} fresh fills`,
         detail: `latest: ${fills[0].side} ${fills[0].token_id.slice(0, 8)}… @ ${fills[0].price?.toFixed(3)}`,
+      };
+    }
+    case "llm_probability_oracle": {
+      const p = g.params;
+      if (!oracleEnabled()) {
+        return { status: "no-data", label: "oracle disabled (ARENA_LLM_ORACLE_ENABLED!=1)" };
+      }
+      const budget = checkBudget();
+      // Look for any cached entry that matches our category filter.
+      let cached: { mid: string; prob: number; conf: string } | null = null;
+      for (const [mid, win] of ctx.snapshots) {
+        if (win.latest.venue !== "sim-poly") continue;
+        if (p.category_filter && win.latest.category !== p.category_filter) continue;
+        const c = peekOracleCache(mid, p.prompt_version);
+        if (c) { cached = { mid, prob: c.probability, conf: c.confidence }; break; }
+      }
+      const cat = p.category_filter ?? "any";
+      const budgetStr = `$${budget.spent_usd.toFixed(2)}/$${budget.cap_usd.toFixed(2)}`;
+      if (!cached) {
+        return { status: "watching", label: `oracle/${cat} · awaiting warm · budget ${budgetStr}` };
+      }
+      return {
+        status: cached.conf === "low" ? "watching" : "would-enter",
+        label: `oracle/${cat} · p=${cached.prob.toFixed(2)} (${cached.conf}) · budget ${budgetStr}`,
+        detail: `cached for ${cached.mid.slice(0, 12)}…`,
       };
     }
     case "category_specialist": {

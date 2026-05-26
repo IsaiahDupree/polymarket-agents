@@ -16,6 +16,7 @@
 import type { Genome } from "./genome";
 import { acceleration, loadRecentCandles, velocity } from "./momentum";
 import { recentFillsForWalletInCategory, walletWinRateByCategory } from "@/lib/wallet/category-stats";
+import { peekOracleCache } from "./llm-oracle";
 import type {
   LiveAgent, PaperTradeRow, Position, Signal, Snapshot, SnapshotWindow, TickContext, Venue,
 } from "./types";
@@ -230,6 +231,36 @@ function decideCbMomentumBurst(g: Extract<Genome, { kind: "cb_momentum_burst" }>
   return holdSignal();
 }
 
+function decideLlmProbabilityOracle(g: Extract<Genome, { kind: "llm_probability_oracle" }>, agent: LiveAgent, ctx: TickContext): Signal {
+  // Synchronous — reads ONLY the oracle cache. The async warmer
+  // (warmOracleCacheForTick) ran before this in the tick loop and may have
+  // populated the cache for one market. We scan our candidate markets and
+  // attach the cached pTrue to a signal so the P2 EV+Kelly rail can engage.
+  for (const [mid, win] of ctx.snapshots) {
+    if (win.latest.venue !== "sim-poly") continue;
+    if (g.params.category_filter && win.latest.category !== g.params.category_filter) continue;
+    if (agent.positions.some((p) => p.market_id === mid)) continue;
+    const cached = peekOracleCache(mid, g.params.prompt_version);
+    if (!cached) continue;
+    if (cached.confidence === "low") continue; // skip low-confidence per article rule 3
+    // Default side: BUY if pTrue > pMarket (we believe YES under-priced), else SELL.
+    const pMarket = win.latest.price;
+    const side: "BUY" | "SELL" = cached.probability > pMarket ? "BUY" : "SELL";
+    const size = Math.min(g.params.entry_size_usd, agent.cash_usd_current);
+    if (size <= 0) continue;
+    return {
+      kind: "entry", venue: "sim-poly", market_id: mid, side,
+      size_usd: size,
+      rationale: `oracle p=${cached.probability.toFixed(2)} (${cached.confidence}) vs mkt=${pMarket.toFixed(2)}`,
+      time_stop_at: new Date(new Date(ctx.now).getTime() + 24 * 3_600_000).toISOString(),
+      // The P2 rail engages on this and applies the EV gate (genome's
+      // min_ev_pct overrides the default 5%) + Quarter Kelly sizing.
+      pTrueEstimate: { pTrue: cached.probability, confidence: cached.confidence, source: "llm-oracle" },
+    };
+  }
+  return holdSignal();
+}
+
 function decideMultiStrategy(g: Extract<Genome, { kind: "multi_strategy" }>, agent: LiveAgent, ctx: TickContext, rng: () => number): Signal {
   // "Agent picks the strategy" — walk sub-genomes in priority order; return
   // the first non-hold signal. The composite owns the entry size (overrides
@@ -266,6 +297,7 @@ function decideForSub(g: import("./genome").SubGenome, agent: LiveAgent, ctx: Ti
     case "random_walk_baseline": return decideRandomWalk(g, agent, ctx, rng);
     case "category_specialist":  return decideCategorySpecialist(g, agent, ctx);
     case "wallet_copy_filtered": return decideWalletCopyFiltered(g, agent, ctx);
+    case "llm_probability_oracle": return decideLlmProbabilityOracle(g, agent, ctx);
   }
 }
 
@@ -398,8 +430,9 @@ export function decide(agent: LiveAgent, ctx: TickContext, rng: () => number): S
     case "cb_momentum_burst":   return decideCbMomentumBurst(g, agent, ctx);
     case "random_walk_baseline": return decideRandomWalk(g, agent, ctx, rng);
     case "category_specialist":  return decideCategorySpecialist(g, agent, ctx);
-    case "wallet_copy_filtered": return decideWalletCopyFiltered(g, agent, ctx);
-    case "multi_strategy":       return decideMultiStrategy(g, agent, ctx, rng);
+    case "wallet_copy_filtered":  return decideWalletCopyFiltered(g, agent, ctx);
+    case "llm_probability_oracle": return decideLlmProbabilityOracle(g, agent, ctx);
+    case "multi_strategy":        return decideMultiStrategy(g, agent, ctx, rng);
   }
 }
 

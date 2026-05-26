@@ -143,7 +143,25 @@ export function aggressivePresets(opts: { polyConditionIdPool?: string[] } = {})
         },
       },
     },
-    // (7) Category specialist (majorexploiter archetype) — focuses on the
+    // (7) LLM probability oracle — Lunar article's "20-line Claude brain".
+    // AI estimates pTrue; the P2 EV+Kelly rail engages downstream. Inert
+    // unless ARENA_LLM_ORACLE_ENABLED=1 (cost gate). One call per tick from
+    // the warmer; this agent just reads the cache.
+    {
+      nick: "agg-oracle-sonnet",
+      genome: {
+        kind: "llm_probability_oracle",
+        params: {
+          model: "claude-sonnet-4-6",
+          min_ev_pct: 0.05,
+          max_calls_per_tick: 1,
+          prompt_version: "v1",
+          cache_ttl_min: 60,
+          entry_size_usd: 25,
+        },
+      },
+    },
+    // (8) Category specialist (majorexploiter archetype) — focuses on the
     // category with most live markets in our snapshot universe. We pick
     // 'crypto' as default since Polymarket's crypto markets are the most
     // liquid and our snapshot worker pulls them heavily.

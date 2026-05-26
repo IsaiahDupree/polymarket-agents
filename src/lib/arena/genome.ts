@@ -126,6 +126,26 @@ const CbMomentumBurst = z.object({
   direction_bias: z.enum(["long_only", "long_short"]),
 }).strict();
 
+const LlmProbabilityOracle = z.object({
+  // The "20-line Claude brain" from the Lunar article: AI estimates P_true,
+  // EV+Kelly rail (P2) gates and resizes, deterministic execution. Inert by
+  // default — requires ARENA_LLM_ORACLE_ENABLED=1 to fire live calls. PRD
+  // lunar-inspired §6.5.R5.
+  model: z.enum(["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]),
+  /** Optional category filter — when set, only evaluates markets in this category. */
+  category_filter: z.enum(["geopolitics", "elections", "crypto", "sports", "macro", "weather", "tech", "other"]).optional(),
+  /** Minimum EV (0.05 = 5% per article) for the rail to allow the entry. */
+  min_ev_pct: pct(0.05, 0.20),
+  /** Cap on live API calls per tick. Hard limit; cache hits don't count. */
+  max_calls_per_tick: num(1, 5),
+  /** Versioned prompt; bump when changing wording so cache key changes. */
+  prompt_version: z.string().default("v1"),
+  /** In-memory cache TTL in minutes. Cache hits log to llm_call_log at $0. */
+  cache_ttl_min: num(5, 240),
+  /** Per-entry size cap. Kelly is also applied by the P2 rail downstream. */
+  entry_size_usd: num(5, 100),
+}).strict();
+
 // --- discriminated union ---
 
 /**
@@ -144,6 +164,7 @@ export const SubGenomeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("random_walk_baseline"), params: RandomWalkBaseline }),
   z.object({ kind: z.literal("category_specialist"),  params: CategorySpecialist }),
   z.object({ kind: z.literal("wallet_copy_filtered"), params: WalletCopyFiltered }),
+  z.object({ kind: z.literal("llm_probability_oracle"), params: LlmProbabilityOracle }),
 ]);
 
 export type SubGenome = z.infer<typeof SubGenomeSchema>;
@@ -173,6 +194,7 @@ export const GenomeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("random_walk_baseline"), params: RandomWalkBaseline }),
   z.object({ kind: z.literal("category_specialist"),  params: CategorySpecialist }),
   z.object({ kind: z.literal("wallet_copy_filtered"), params: WalletCopyFiltered }),
+  z.object({ kind: z.literal("llm_probability_oracle"), params: LlmProbabilityOracle }),
   z.object({ kind: z.literal("multi_strategy"),       params: MultiStrategy }),
 ]);
 
@@ -189,6 +211,7 @@ export const GENOME_KINDS: GenomeKind[] = [
   "random_walk_baseline",
   "category_specialist",
   "wallet_copy_filtered",
+  "llm_probability_oracle",
   "multi_strategy",
 ];
 
@@ -261,6 +284,16 @@ const PARAM_BOUNDS: Record<GenomeKind, Record<string, [number, number] | string[
     selection: ["priority"],
     entry_size_usd: [5, 100],
   },
+  llm_probability_oracle: {
+    model: ["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
+    // category_filter is optional — randomGenome leaves it undefined when
+    // bounds are absent. min_ev_pct, max_calls_per_tick, cache_ttl_min,
+    // entry_size_usd are all numeric.
+    min_ev_pct: [0.05, 0.20],
+    max_calls_per_tick: [1, 5],
+    cache_ttl_min: [5, 240],
+    entry_size_usd: [5, 100],
+  },
 };
 
 export function getParamBounds(kind: GenomeKind): Record<string, [number, number] | string[]> {
@@ -327,6 +360,13 @@ export function randomGenome(
     params.wallet_address = pool[Math.floor(rng() * Math.max(1, pool.length))]
       ?? "0x02227b8f5a9636e895607edd3185ed6ee5598ff7";
   }
+  if (chosen === "llm_probability_oracle") {
+    params.prompt_version = "v1";
+    // max_calls_per_tick is an integer
+    if (params.max_calls_per_tick !== undefined) params.max_calls_per_tick = Math.max(1, Math.round(params.max_calls_per_tick as number));
+    // cache_ttl_min is integer minutes
+    if (params.cache_ttl_min !== undefined) params.cache_ttl_min = Math.max(5, Math.round(params.cache_ttl_min as number));
+  }
   // Round integers where the strategy semantically expects integers (lookbacks, time stops).
   const intKeys = new Set([
     "lookback_h", "confirm_quiet_h", "time_stop_h",
@@ -359,6 +399,7 @@ export function genomeNickname(g: Genome): string {
     case "random_walk_baseline": return "rand";
     case "category_specialist": return `cat-${g.params.category}-${g.params.inner_strategy === "breakout" ? "bo" : "fs"}`;
     case "wallet_copy_filtered": return `copy-${g.params.wallet_address.slice(2, 8)}-${g.params.copy_category}`;
+    case "llm_probability_oracle": return `oracle-${g.params.model.includes("opus") ? "opus" : g.params.model.includes("sonnet") ? "sonnet" : "haiku"}${g.params.category_filter ? `-${g.params.category_filter}` : ""}`;
     case "multi_strategy": {
       const subKinds = g.params.subs.map((s) => s.kind.replace("cb_", "").replace("poly_", "").slice(0, 4));
       return `multi-${subKinds.join("+")}`;
