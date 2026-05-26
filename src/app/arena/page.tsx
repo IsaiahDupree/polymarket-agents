@@ -8,6 +8,7 @@ import { Sparkline } from "@/components/Sparkline";
 import { db } from "@/lib/db/client";
 import { buildLiveTickContext } from "@/lib/arena/context";
 import { diagnoseAgents, type AgentDiagnostic } from "@/lib/arena/diagnostic";
+import { wsHealth } from "@/lib/arena/realtime-ticks";
 
 export const dynamic = "force-dynamic";
 
@@ -74,6 +75,9 @@ export default async function ArenaPage() {
   const liveAgents = alive.map(toLiveAgent);
   const diagnostics = diagnoseAgents(liveAgents, liveCtx);
 
+  // WS health — sub-minute crypto tick freshness from worker:realtime.
+  const wsRows = wsHealth(60);
+
   return (
     <div className="space-y-8">
       <AutoRefresh label="arena" />
@@ -83,6 +87,20 @@ export default async function ArenaPage() {
           {ranked.length} alive · gen {currentGen?.gen_number ?? "—"} open ·
           fitness = pnl% − 2 × max-DD% (TradingBot Arena formula). Top-1 across {process.env.ARENA_CHAMPION_GENS ?? "3"} consecutive sealed gens → eligible for capsule activation.
         </p>
+        {wsRows.length > 0 && (
+          <div className="flex gap-2 mt-2 flex-wrap text-[10px]">
+            <span className="text-zinc-500">WS:</span>
+            {wsRows.map((w) => (
+              <span
+                key={w.product_id}
+                className={`px-1.5 py-0.5 rounded ${w.fresh ? "bg-accent-green/20 text-accent-green" : "bg-accent-red/20 text-accent-red"}`}
+                title={`Last tick: ${w.ageSec}s ago, price=$${w.latest_price.toFixed(2)}`}
+              >
+                {w.product_id}={w.ageSec}s
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       <section className="grid grid-cols-4 gap-4">

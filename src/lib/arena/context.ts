@@ -9,6 +9,7 @@
  */
 import { db } from "@/lib/db/client";
 import { enrichContextWithCrossVenue } from "./cross-venue";
+import { latestRealtimeTicks } from "./realtime-ticks";
 import type { Snapshot, SnapshotWindow, TickContext, Venue } from "./types";
 
 const DEFAULT_HISTORY_DAYS = 7;
@@ -51,14 +52,30 @@ function group(snaps: Snapshot[]): Map<string, Snapshot[]> {
   return out;
 }
 
-/** Build a live TickContext using the most recent snapshot per market. */
-export function buildLiveTickContext(opts: { historyDays?: number; enrichCrossVenue?: boolean } = {}): TickContext {
+/** Build a live TickContext using the most recent snapshot per market. WS
+ *  realtime ticks (last 90s) override the `latest.price` for matching CB
+ *  products — history stays from REST snapshots, only the "now" price gets
+ *  the sub-minute freshness boost. PRD §6.3.L3 + Phase 7. */
+export function buildLiveTickContext(opts: { historyDays?: number; enrichCrossVenue?: boolean; wsMaxAgeSec?: number } = {}): TickContext {
   const sinceIso = isoMinus(opts.historyDays ?? DEFAULT_HISTORY_DAYS);
   const allSnaps = [...loadPolySnapshots(sinceIso), ...loadCbSnapshots(sinceIso)];
   const grouped = group(allSnaps);
   const windows = new Map<string, SnapshotWindow>();
   for (const [mid, arr] of grouped) {
     windows.set(mid, { history: arr, latest: arr[arr.length - 1] });
+  }
+  // Override `latest.price` with the freshest WS tick when one exists for the
+  // product. History remains unchanged — we don't pollute it with WS data.
+  const fresh = latestRealtimeTicks(opts.wsMaxAgeSec ?? 90);
+  for (const [productId, tick] of fresh) {
+    const win = windows.get(productId);
+    if (!win) continue;
+    const overridden: Snapshot = {
+      ...win.latest,
+      price: tick.price,
+      captured_at: new Date(tick.ts_unix * 1000).toISOString(),
+    };
+    windows.set(productId, { history: win.history, latest: overridden });
   }
   const ctx: TickContext = { now: new Date().toISOString(), snapshots: windows };
   if (opts.enrichCrossVenue !== false) enrichContextWithCrossVenue(ctx);

@@ -26,6 +26,16 @@ export function makeMemoryDb(): Database.Database {
   ensureColumn(db, "paper_agents", "entries_count", "entries_count INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "market_snapshots", "category", "category TEXT");
   db.exec(`
+    CREATE TABLE IF NOT EXISTS realtime_ticks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      symbol TEXT NOT NULL,
+      product_id TEXT NOT NULL,
+      price REAL NOT NULL,
+      source TEXT NOT NULL,
+      ts_unix INTEGER NOT NULL
+    );
+  `);
+  db.exec(`
     CREATE TABLE IF NOT EXISTS llm_call_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       model TEXT NOT NULL,

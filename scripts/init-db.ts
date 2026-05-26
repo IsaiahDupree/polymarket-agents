@@ -26,6 +26,22 @@ ensureColumn("market_snapshots", "category", "category TEXT");
 // llm_call_log — every call to the LLM probability oracle gets logged here
 // (cache hits + misses). Budget guard sums today's cost_usd to refuse calls
 // once the daily cap is hit. PRD lunar-inspired §6.5 + Phase 6.
+// realtime_ticks — sub-minute price ticks from worker:realtime WS. Arena
+// context reads the freshest tick per product (last 90s) and overrides the
+// "now" price in coinbase snapshots. PRD arena-agent-decision-framework
+// §6.3.L3 + IMPLEMENTATION Phase 7.
+handle.exec(`
+  CREATE TABLE IF NOT EXISTS realtime_ticks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    product_id TEXT NOT NULL,
+    price REAL NOT NULL,
+    source TEXT NOT NULL,
+    ts_unix INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_realtime_ticks_product_ts ON realtime_ticks(product_id, ts_unix DESC);
+`);
+
 handle.exec(`
   CREATE TABLE IF NOT EXISTS llm_call_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
