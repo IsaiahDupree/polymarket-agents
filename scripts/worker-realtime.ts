@@ -20,7 +20,7 @@ import "./_env.ts";
 import { ConnectionStatus, PolymarketRealtime, hasClobCreds } from "../src/lib/polymarket/realtime.ts";
 import { insertEvolutionEvent } from "../src/lib/db/queries.ts";
 import { db } from "../src/lib/db/client.ts";
-import { persistRealtimeTick, pruneOldTicks } from "../src/lib/arena/realtime-ticks.ts";
+import { persistRealtimeTick, pruneOldTicks, wsHealth } from "../src/lib/arena/realtime-ticks.ts";
 
 // Slug allow-list from env (comma-separated). If empty, subscribe with no filter
 // (firehose — useful for development; not recommended for prod).
@@ -138,6 +138,13 @@ async function main() {
   // Heartbeat — log throughput every HEARTBEAT_INTERVAL_MS and write a single
   // evolution event so the operator can verify the worker is healthy from
   // /evolution UI without tailing logs.
+  // Stale-tick liveness check — if a product hasn't received a tick in
+  // STALE_THRESHOLD_SEC, emit a `realtime-stalled` evolution_log event so
+  // /evolution shows the silent-failure mode. Audit fix F6.
+  const STALE_THRESHOLD_SEC = Number(process.env.REALTIME_STALE_SEC ?? "300");
+  // Don't spam: only alert once per product per period. Reset on first fresh tick.
+  const stalledProducts = new Set<string>();
+
   const heartbeat = setInterval(() => {
     const now = Date.now();
     const elapsedSec = (now - lastHeartbeatAt) / 1000;
@@ -146,11 +153,29 @@ async function main() {
     lastHeartbeatActivityCount = activityCount;
     // Daily prune to keep realtime_ticks small. Cheap one-shot delete.
     const pruned = pruneOldTicks(24);
-    console.log(`[worker-realtime] heartbeat: connected=${rt.isConnected()} activity_total=${activityCount} (+${recentActivity}/${elapsedSec.toFixed(0)}s) user_channel=${userChannelCount} crypto=${cryptoPriceCount} (wrote=${cryptoTicksWritten} debounced=${cryptoTicksDebounced})${pruned > 0 ? ` pruned=${pruned}` : ""}`);
+
+    // F6 stale-tick check: any product silent > STALE_THRESHOLD_SEC?
+    const health = wsHealth(STALE_THRESHOLD_SEC);
+    const stale = health.filter((h) => !h.fresh);
+    const fresh = health.filter((h) => h.fresh);
+    // Emit one-shot per product-going-stale.
+    for (const h of stale) {
+      if (stalledProducts.has(h.product_id)) continue;
+      stalledProducts.add(h.product_id);
+      insertEvolutionEvent({
+        event_type: "realtime-stalled",
+        summary: `WS stale: ${h.product_id} last tick ${h.ageSec}s ago (>= ${STALE_THRESHOLD_SEC}s threshold)`,
+        payload_json: JSON.stringify({ product_id: h.product_id, ageSec: h.ageSec, threshold_sec: STALE_THRESHOLD_SEC, connected: rt.isConnected() }),
+      });
+    }
+    // Clear the dedup flag when products recover.
+    for (const h of fresh) stalledProducts.delete(h.product_id);
+
+    console.log(`[worker-realtime] heartbeat: connected=${rt.isConnected()} activity_total=${activityCount} (+${recentActivity}/${elapsedSec.toFixed(0)}s) user_channel=${userChannelCount} crypto=${cryptoPriceCount} (wrote=${cryptoTicksWritten} debounced=${cryptoTicksDebounced})${pruned > 0 ? ` pruned=${pruned}` : ""}${stale.length > 0 ? ` STALE=[${stale.map((s) => s.product_id).join(",")}]` : ""}`);
     insertEvolutionEvent({
       event_type: "realtime-heartbeat",
-      summary: `WS connected=${rt.isConnected()} activity+${recentActivity}/${elapsedSec.toFixed(0)}s crypto+${cryptoTicksWritten}`,
-      payload_json: JSON.stringify({ activityCount, userChannelCount, cryptoPriceCount, cryptoTicksWritten, cryptoTicksDebounced, recentActivity, elapsedSec, pruned }),
+      summary: `WS connected=${rt.isConnected()} activity+${recentActivity}/${elapsedSec.toFixed(0)}s crypto+${cryptoTicksWritten}${stale.length > 0 ? ` · ${stale.length} stale` : ""}`,
+      payload_json: JSON.stringify({ activityCount, userChannelCount, cryptoPriceCount, cryptoTicksWritten, cryptoTicksDebounced, recentActivity, elapsedSec, pruned, stale_products: stale.map((s) => s.product_id) }),
     });
   }, HEARTBEAT_INTERVAL_MS);
 
