@@ -35,8 +35,24 @@ const PRICING: Record<string, { input: number; output: number }> = {
   "claude-haiku-4-5-20251001":{ input:  1, output:  5 },
 };
 
-// In-memory cache. Keyed by `${market_id}|${prompt_version}|${hour_bucket}`.
+/**
+ * In-memory cache keyed by `${market_id}|${prompt_version}|${hour_bucket}`.
+ * Bounded with insertion-order LRU eviction at MAX_CACHE_ENTRIES — long-
+ * running scheduler processes don't grow this Map indefinitely. Audit F4.
+ */
+const MAX_CACHE_ENTRIES = 512;
 const CACHE = new Map<string, { result: OracleResult; cached_at: number; ttl_min: number }>();
+
+function cacheInsert(key: string, value: { result: OracleResult; cached_at: number; ttl_min: number }): void {
+  // Re-insert moves the key to "newest" position. Then evict oldest.
+  CACHE.delete(key);
+  CACHE.set(key, value);
+  while (CACHE.size > MAX_CACHE_ENTRIES) {
+    const oldest = CACHE.keys().next().value;
+    if (oldest === undefined) break;
+    CACHE.delete(oldest);
+  }
+}
 
 function hourBucket(now = new Date()): string {
   return `${now.getUTCFullYear()}-${(now.getUTCMonth() + 1).toString().padStart(2, "0")}-${now.getUTCDate().toString().padStart(2, "0")}T${now.getUTCHours().toString().padStart(2, "0")}`;
@@ -55,21 +71,38 @@ function cacheHit(key: string, ttlMin: number): OracleResult | null {
   return e.result;
 }
 
+export type OracleErrorKind = "rate_limit" | "auth" | "parse" | "transport" | "unknown";
+
 function logCall(args: {
   model: string; promptVersion: string; marketId: string;
   inputTokens: number; outputTokens: number; cost_usd: number;
   callerAgentId?: number; cacheHit: boolean; response: OracleResult | null;
+  errorKind?: OracleErrorKind;
 }) {
   db().prepare(
-    `INSERT INTO llm_call_log (model, prompt_version, market_id, input_tokens, output_tokens, cost_usd, caller_agent_id, cache_hit, response_json)
-     VALUES (@model, @promptVersion, @marketId, @inputTokens, @outputTokens, @cost_usd, @callerAgentId, @cacheHit, @response)`,
+    `INSERT INTO llm_call_log (model, prompt_version, market_id, input_tokens, output_tokens, cost_usd, caller_agent_id, cache_hit, response_json, error_kind)
+     VALUES (@model, @promptVersion, @marketId, @inputTokens, @outputTokens, @cost_usd, @callerAgentId, @cacheHit, @response, @errorKind)`,
   ).run({
     model: args.model, promptVersion: args.promptVersion, marketId: args.marketId,
     inputTokens: args.inputTokens, outputTokens: args.outputTokens, cost_usd: args.cost_usd,
     callerAgentId: args.callerAgentId ?? null,
     cacheHit: args.cacheHit ? 1 : 0,
     response: args.response ? JSON.stringify(args.response) : null,
+    errorKind: args.errorKind ?? null,
   });
+}
+
+/** Classify an exception thrown from the Anthropic SDK or the JSON parser into
+ *  the operator-facing error kinds. Audit F3. */
+function classifyError(e: unknown): OracleErrorKind {
+  const status = (e as { status?: number })?.status;
+  if (status === 429) return "rate_limit";
+  if (status === 401 || status === 403) return "auth";
+  const name = (e as { name?: string })?.name ?? "";
+  const message = (e as { message?: string })?.message ?? "";
+  if (name === "AbortError" || /timeout|timed out|ECONNRESET|ENOTFOUND/i.test(message)) return "transport";
+  if (/json|parse|unexpected token/i.test(message)) return "parse";
+  return "unknown";
 }
 
 function computeCost(model: string, inputTokens: number, outputTokens: number): number {
@@ -164,18 +197,28 @@ export async function callOracle(args: CallOracleArgs): Promise<OracleResult | n
         model, promptVersion, marketId: args.marketId,
         inputTokens, outputTokens, cost_usd: cost,
         callerAgentId: args.callerAgentId, cacheHit: false, response: null,
+        errorKind: "parse",
       });
       return null;
     }
     const result = validated.data;
-    CACHE.set(key, { result, cached_at: Date.now(), ttl_min: ttl });
+    cacheInsert(key, { result, cached_at: Date.now(), ttl_min: ttl });
     logCall({
       model, promptVersion, marketId: args.marketId,
       inputTokens, outputTokens, cost_usd: cost,
       callerAgentId: args.callerAgentId, cacheHit: false, response: result,
     });
     return result;
-  } catch {
+  } catch (e) {
+    // Audit F3 — log every failure with a classified error_kind so the
+    // operator can SELECT * FROM llm_call_log WHERE error_kind IS NOT NULL
+    // and see what's broken. cost_usd = 0 because no tokens were billed.
+    logCall({
+      model, promptVersion, marketId: args.marketId,
+      inputTokens: 0, outputTokens: 0, cost_usd: 0,
+      callerAgentId: args.callerAgentId, cacheHit: false, response: null,
+      errorKind: classifyError(e),
+    });
     return null;
   }
 }
@@ -226,5 +269,8 @@ export function _clearOracleCache(): void {
 
 /** Test-only: seed the cache (skip API). */
 export function _seedOracleCache(marketId: string, promptVersion: string, result: OracleResult, ttlMin = 60): void {
-  CACHE.set(cacheKey(marketId, promptVersion), { result, cached_at: Date.now(), ttl_min: ttlMin });
+  cacheInsert(cacheKey(marketId, promptVersion), { result, cached_at: Date.now(), ttl_min: ttlMin });
 }
+
+/** Test-only: read current cache size for the LRU cap assertion. */
+export function _oracleCacheSize(): number { return CACHE.size; }

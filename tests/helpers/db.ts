@@ -47,7 +47,8 @@ export function makeMemoryDb(): Database.Database {
       called_at TEXT NOT NULL DEFAULT (datetime('now')),
       caller_agent_id INTEGER,
       cache_hit INTEGER NOT NULL DEFAULT 0,
-      response_json TEXT
+      response_json TEXT,
+      error_kind TEXT
     );
   `);
   // Also create the tracked_wallets + wallet_fills tables that live outside the main schema file

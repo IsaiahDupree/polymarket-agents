@@ -59,6 +59,10 @@ handle.exec(`
   CREATE INDEX IF NOT EXISTS idx_llm_call_log_called_at ON llm_call_log(called_at DESC);
   CREATE INDEX IF NOT EXISTS idx_llm_call_log_market_id ON llm_call_log(market_id, called_at DESC);
 `);
+// error_kind column tags failed oracle calls (rate_limit | auth | parse |
+// transport | unknown) so the operator can SELECT to see why the oracle is
+// failing. Audit F3. NULL on success.
+ensureColumn("llm_call_log", "error_kind", "error_kind TEXT");
 // entries_count tracks the count of ENTRY trades (one bump per applySignal
 // entry). trades_count continues to count round-trips (bumps on exit), so
 // win-rate denominators stay correct. Both columns are tracked because the
