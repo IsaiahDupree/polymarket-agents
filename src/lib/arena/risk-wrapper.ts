@@ -62,6 +62,17 @@ export function applyRiskRails(
   }
   const pT = signal.pTrueEstimate.pTrue;
 
+  // Bug #1 (Base Rate Neglect) guardrail: extreme-probability claims need
+  // confidence='high' AND a size cap, to keep the system from sizing huge
+  // off a single LLM prediction at 5% or 95%+. Per PRD §6.6.R6.
+  const EXTREME_LO = 0.05;
+  const EXTREME_HI = 0.95;
+  const EXTREME_CAP_USD = 10;
+  const isExtreme = pT < EXTREME_LO || pT > EXTREME_HI;
+  if (isExtreme && signal.pTrueEstimate.confidence !== "high") {
+    return { kept: false, reason: `extreme pTrue=${pT.toFixed(2)} requires confidence=high (have ${signal.pTrueEstimate.confidence ?? "unspecified"})` };
+  }
+
   // For SELL entries (shorting YES = buying NO), our pTrue belief should
   // exceed the implied prob of NO, i.e. pTrue < pMarket. Translate by mirroring
   // before the EV gate so the math always evaluates the side we're taking.
@@ -84,8 +95,10 @@ export function applyRiskRails(
     return { kept: false, reason: "Kelly recommends SKIP", ev: ev.evPerDollar };
   }
   // Use the smaller of genome-requested size and Kelly-suggested size — the
-  // rail can only shrink positions, never grow them.
-  const adjustedSize = Math.min(signal.size_usd, kelly.betUsd);
+  // rail can only shrink positions, never grow them. Extreme-probability
+  // claims get an additional hard cap (Bug #1 guardrail).
+  let adjustedSize = Math.min(signal.size_usd, kelly.betUsd);
+  if (isExtreme) adjustedSize = Math.min(adjustedSize, EXTREME_CAP_USD);
   const sizeAdjusted = adjustedSize !== signal.size_usd;
   const newSignal: Signal = sizeAdjusted ? { ...signal, size_usd: adjustedSize } : signal;
   return { kept: true, signal: newSignal, ev: ev.evPerDollar, kellyBetUsd: kelly.betUsd, sizeAdjusted, engaged: true };
