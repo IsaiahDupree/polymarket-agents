@@ -103,7 +103,47 @@ export function aggressivePresets(opts: { polyConditionIdPool?: string[] } = {})
         },
       },
     },
-    // (6) Category specialist (majorexploiter archetype) — focuses on the
+    // (6) Multi-strategy composite — the "agent picks the strategy" archetype.
+    // Combines three of the proven Phase-1 winners into one composite that
+    // walks them in priority order and returns the first non-hold signal.
+    // PRD arena-agent-decision-framework §6.2.L2.
+    {
+      nick: "agg-multi-mr-mom-rand",
+      genome: {
+        kind: "multi_strategy",
+        params: {
+          subs: [
+            // (a) Mean-reversion on ETH at z=1.0 — the mild contrarian
+            {
+              kind: "cb_mean_reversion",
+              params: {
+                product_id: "ETH-USD",
+                lookback_min: 120, z_entry: 1.0, z_exit: 0.0,
+                entry_size_usd: 20, stop_pct: 0.02, time_stop_min: 240,
+              },
+            },
+            // (b) Momentum-burst on BTC at lowest threshold
+            {
+              kind: "cb_momentum_burst",
+              params: {
+                product_id: "BTC-USD",
+                vel_window_min: 5, vel_entry_pct: 0.001, accel_min: 0.00005,
+                entry_size_usd: 20, target_pct: 0.003, stop_pct: 0.004,
+                time_stop_min: 30, direction_bias: "long_short",
+              },
+            },
+            // (c) Random walk fallback — guarantees activity when both above hold
+            {
+              kind: "random_walk_baseline",
+              params: { trade_prob: 0.05, buy_bias_pct: 0.5, entry_size_usd: 10 },
+            },
+          ],
+          selection: "priority",
+          entry_size_usd: 25,
+        },
+      },
+    },
+    // (7) Category specialist (majorexploiter archetype) — focuses on the
     // category with most live markets in our snapshot universe. We pick
     // 'crypto' as default since Polymarket's crypto markets are the most
     // liquid and our snapshot worker pulls them heavily.

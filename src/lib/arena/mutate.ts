@@ -9,7 +9,7 @@
  * perturbations are clamped and string enums are kept inside their list.
  */
 import { z } from "zod";
-import { GenomeSchema, getParamBounds, randomGenome, type Genome, type GenomeKind, clamp, GENOME_KINDS } from "./genome";
+import { GenomeSchema, getParamBounds, randomGenome, type Genome, type GenomeKind, type SubGenome, clamp, GENOME_KINDS, SUB_GENOME_KINDS } from "./genome";
 
 const SIGMA_PCT = 0.20;            // 20% std-dev perturbation per numeric param
 const KIND_SWITCH_PROB = 0.05;     // chance of jumping to a different strategy kind
@@ -35,6 +35,11 @@ const INT_KEYS = new Set([
 ]);
 
 export function mutateProgrammatic(parent: Genome, rng: () => number, opts: { polyConditionIdPool?: string[] } = {}): Genome {
+  // multi_strategy needs its own mutation handler — sub-genomes are recursive
+  // and the generic bounds-based loop can't perturb them.
+  if (parent.kind === "multi_strategy") {
+    return mutateMultiStrategy(parent, rng, opts);
+  }
   // Occasional jump to a different kind to keep exploration alive.
   if (rng() < KIND_SWITCH_PROB) {
     const others = GENOME_KINDS.filter((k) => k !== parent.kind);
@@ -65,6 +70,55 @@ export function mutateProgrammatic(parent: Genome, rng: () => number, opts: { po
 
 function randomFresh(kind: GenomeKind, rng: () => number, opts: { polyConditionIdPool?: string[] }): Genome {
   return randomGenome(rng, kind, opts);
+}
+
+/**
+ * Mutation for multi_strategy composite — three strategies in priority order:
+ *   - 70%: perturb one sub-genome's parameters (recursively call
+ *          mutateProgrammatic on that sub)
+ *   - 20%: replace one sub-genome with a fresh random of a different kind
+ *   - 10%: reorder the subs array (matters for selection="priority")
+ *
+ * Always returns a valid multi_strategy genome — perturbation of subs that
+ * fail validation falls back to the parent sub. PRD §6.2.L2 + Phase 5 spec.
+ */
+function mutateMultiStrategy(parent: Extract<Genome, { kind: "multi_strategy" }>, rng: () => number, opts: { polyConditionIdPool?: string[] }): Genome {
+  const subs: SubGenome[] = [...parent.params.subs];
+  const r = rng();
+  if (r < 0.70) {
+    // Perturb one sub.
+    const idx = Math.floor(rng() * subs.length);
+    const mutated = mutateProgrammatic(subs[idx], rng, opts);
+    if (mutated.kind !== "multi_strategy") {
+      subs[idx] = mutated as SubGenome;
+    }
+  } else if (r < 0.90) {
+    // Replace one sub with a fresh random of a different kind.
+    const idx = Math.floor(rng() * subs.length);
+    const existingKinds = new Set(subs.map((s) => s.kind));
+    const choices = SUB_GENOME_KINDS.filter((k) => !existingKinds.has(k));
+    const newKind = choices.length > 0
+      ? choices[Math.floor(rng() * choices.length)]
+      : SUB_GENOME_KINDS[Math.floor(rng() * SUB_GENOME_KINDS.length)];
+    const fresh = randomGenome(rng, newKind, opts);
+    if (fresh.kind !== "multi_strategy") {
+      subs[idx] = fresh as SubGenome;
+    }
+  } else {
+    // Reorder subs (shuffle).
+    for (let i = subs.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      [subs[i], subs[j]] = [subs[j], subs[i]];
+    }
+  }
+  return GenomeSchema.parse({
+    kind: "multi_strategy",
+    params: {
+      subs,
+      selection: parent.params.selection,
+      entry_size_usd: parent.params.entry_size_usd,
+    },
+  });
 }
 
 /**

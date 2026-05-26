@@ -128,6 +128,41 @@ const CbMomentumBurst = z.object({
 
 // --- discriminated union ---
 
+/**
+ * Sub-genomes used by `multi_strategy` composite genome. Same shape as the
+ * top-level union but EXCLUDES multi_strategy itself — we don't allow
+ * nested composites (one level of composition is plenty; recursion adds
+ * complexity without obvious benefit).
+ */
+export const SubGenomeSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("poly_fade_spike"),      params: PolyFadeSpike }),
+  z.object({ kind: z.literal("poly_breakout"),        params: PolyBreakout }),
+  z.object({ kind: z.literal("cb_breakout"),          params: CbBreakout }),
+  z.object({ kind: z.literal("cb_mean_reversion"),    params: CbMeanReversion }),
+  z.object({ kind: z.literal("cross_venue_arb"),      params: CrossVenueArb }),
+  z.object({ kind: z.literal("cb_momentum_burst"),    params: CbMomentumBurst }),
+  z.object({ kind: z.literal("random_walk_baseline"), params: RandomWalkBaseline }),
+  z.object({ kind: z.literal("category_specialist"),  params: CategorySpecialist }),
+  z.object({ kind: z.literal("wallet_copy_filtered"), params: WalletCopyFiltered }),
+]);
+
+export type SubGenome = z.infer<typeof SubGenomeSchema>;
+export type SubGenomeKind = SubGenome["kind"];
+
+/**
+ * Multi-strategy composite genome — the "agent picks the strategy" archetype.
+ * The agent's intelligence is in *which sub-strategy to invoke this tick*,
+ * not in any single strategy's parameters. `decide()` walks `subs` in order
+ * and returns the first non-hold signal (selection: "priority"). Future
+ * `selection` modes may pick the highest-confidence sub instead.
+ * PRD arena-agent-decision-framework §6.2.L2 + IMPLEMENTATION Phase 5.
+ */
+const MultiStrategy = z.object({
+  subs: z.array(SubGenomeSchema).min(2).max(4),
+  selection: z.enum(["priority"]),
+  entry_size_usd: num(5, 100),
+}).strict();
+
 export const GenomeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("poly_fade_spike"),      params: PolyFadeSpike }),
   z.object({ kind: z.literal("poly_breakout"),        params: PolyBreakout }),
@@ -138,6 +173,7 @@ export const GenomeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("random_walk_baseline"), params: RandomWalkBaseline }),
   z.object({ kind: z.literal("category_specialist"),  params: CategorySpecialist }),
   z.object({ kind: z.literal("wallet_copy_filtered"), params: WalletCopyFiltered }),
+  z.object({ kind: z.literal("multi_strategy"),       params: MultiStrategy }),
 ]);
 
 export type Genome = z.infer<typeof GenomeSchema>;
@@ -153,7 +189,12 @@ export const GENOME_KINDS: GenomeKind[] = [
   "random_walk_baseline",
   "category_specialist",
   "wallet_copy_filtered",
+  "multi_strategy",
 ];
+
+export const SUB_GENOME_KINDS: SubGenomeKind[] = GENOME_KINDS.filter(
+  (k): k is SubGenomeKind => k !== "multi_strategy",
+);
 
 const PARAM_BOUNDS: Record<GenomeKind, Record<string, [number, number] | string[]>> = {
   poly_fade_spike: {
@@ -213,6 +254,13 @@ const PARAM_BOUNDS: Record<GenomeKind, Record<string, [number, number] | string[
     delay_min: [1, 60], min_source_win_rate: [0.40, 0.90],
     min_source_trades: [5, 200],
   },
+  // multi_strategy's `subs` array is recursive and can't be expressed as
+  // simple numeric bounds — randomGenome and mutate special-case it.
+  // Only entry_size_usd is generic.
+  multi_strategy: {
+    selection: ["priority"],
+    entry_size_usd: [5, 100],
+  },
 };
 
 export function getParamBounds(kind: GenomeKind): Record<string, [number, number] | string[]> {
@@ -236,6 +284,24 @@ export function randomGenome(
   opts: { polyConditionIdPool?: string[]; walletPool?: string[] } = {},
 ): Genome {
   const chosen = kind ?? GENOME_KINDS[Math.floor(rng() * GENOME_KINDS.length)];
+  // multi_strategy needs special handling — `subs` array can't be sampled
+  // from PARAM_BOUNDS. Pick 2-3 random non-composite sub-genomes.
+  if (chosen === "multi_strategy") {
+    const nSubs = 2 + Math.floor(rng() * 2); // 2 or 3
+    const subs = [];
+    for (let i = 0; i < nSubs; i++) {
+      const subKind = SUB_GENOME_KINDS[Math.floor(rng() * SUB_GENOME_KINDS.length)];
+      subs.push(randomGenome(rng, subKind, opts) as SubGenome);
+    }
+    return GenomeSchema.parse({
+      kind: "multi_strategy",
+      params: {
+        subs,
+        selection: "priority",
+        entry_size_usd: 5 + rng() * 95,
+      },
+    });
+  }
   const bounds = PARAM_BOUNDS[chosen];
   const params: Record<string, unknown> = {};
   for (const [k, b] of Object.entries(bounds)) {
@@ -293,5 +359,9 @@ export function genomeNickname(g: Genome): string {
     case "random_walk_baseline": return "rand";
     case "category_specialist": return `cat-${g.params.category}-${g.params.inner_strategy === "breakout" ? "bo" : "fs"}`;
     case "wallet_copy_filtered": return `copy-${g.params.wallet_address.slice(2, 8)}-${g.params.copy_category}`;
+    case "multi_strategy": {
+      const subKinds = g.params.subs.map((s) => s.kind.replace("cb_", "").replace("poly_", "").slice(0, 4));
+      return `multi-${subKinds.join("+")}`;
+    }
   }
 }

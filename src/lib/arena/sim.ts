@@ -230,6 +230,45 @@ function decideCbMomentumBurst(g: Extract<Genome, { kind: "cb_momentum_burst" }>
   return holdSignal();
 }
 
+function decideMultiStrategy(g: Extract<Genome, { kind: "multi_strategy" }>, agent: LiveAgent, ctx: TickContext, rng: () => number): Signal {
+  // "Agent picks the strategy" — walk sub-genomes in priority order; return
+  // the first non-hold signal. The composite owns the entry size (overrides
+  // the sub's requested size with its own entry_size_usd), but inherits
+  // venue/market/side/exits from the sub. PRD §6.2.L2.
+  for (const sub of g.params.subs) {
+    // Construct a temporary agent view scoped to the sub's genome — sim
+    // engine reads `agent.genome` in some sub-paths (e.g. for rand). Using
+    // the original positions/state but swapping the genome.
+    const subAgent: LiveAgent = { ...agent, genome: sub };
+    const sig = decideForSub(sub, subAgent, ctx, rng);
+    if (sig.kind !== "hold") {
+      if (sig.kind === "entry") {
+        // Override size with the composite's own entry_size_usd budget,
+        // capped by available cash.
+        return { ...sig, size_usd: Math.min(g.params.entry_size_usd, agent.cash_usd_current), rationale: `multi/${sub.kind}: ${sig.rationale}` };
+      }
+      return sig;
+    }
+  }
+  return holdSignal();
+}
+
+/** Dispatch a sub-genome to its decide function. Mirrors the main switch but
+ *  excludes multi_strategy (no nested composition). */
+function decideForSub(g: import("./genome").SubGenome, agent: LiveAgent, ctx: TickContext, rng: () => number): Signal {
+  switch (g.kind) {
+    case "poly_fade_spike":      return decidePolyFadeSpike(g, agent, ctx);
+    case "poly_breakout":        return decidePolyBreakout(g, agent, ctx);
+    case "cb_breakout":          return decideCbBreakout(g, agent, ctx);
+    case "cb_mean_reversion":    return decideCbMeanReversion(g, agent, ctx);
+    case "cross_venue_arb":      return decideCrossVenueArb(g, agent, ctx);
+    case "cb_momentum_burst":    return decideCbMomentumBurst(g, agent, ctx);
+    case "random_walk_baseline": return decideRandomWalk(g, agent, ctx, rng);
+    case "category_specialist":  return decideCategorySpecialist(g, agent, ctx);
+    case "wallet_copy_filtered": return decideWalletCopyFiltered(g, agent, ctx);
+  }
+}
+
 function decideWalletCopyFiltered(g: Extract<Genome, { kind: "wallet_copy_filtered" }>, agent: LiveAgent, ctx: TickContext): Signal {
   // Mental Bug #4 guard: refuse to copy if the source's win-rate in the chosen
   // category is below threshold OR if the source has too few trades in that
@@ -360,6 +399,7 @@ export function decide(agent: LiveAgent, ctx: TickContext, rng: () => number): S
     case "random_walk_baseline": return decideRandomWalk(g, agent, ctx, rng);
     case "category_specialist":  return decideCategorySpecialist(g, agent, ctx);
     case "wallet_copy_filtered": return decideWalletCopyFiltered(g, agent, ctx);
+    case "multi_strategy":       return decideMultiStrategy(g, agent, ctx, rng);
   }
 }
 

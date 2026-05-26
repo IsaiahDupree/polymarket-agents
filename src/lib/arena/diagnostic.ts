@@ -44,6 +44,22 @@ export function diagnoseAgent(agent: LiveAgent, ctx: TickContext): AgentDiagnost
     return { status: "in-position", label: `${agent.positions.length} open` };
   }
   const g = agent.genome;
+  if (g.kind === "multi_strategy") {
+    // Aggregate sub-diagnostics. Surface the "best" sub (would-enter beats
+    // watching beats no-data). Status reflects the best.
+    const subDiags = g.params.subs.map((sub) => {
+      const subAgent = { ...agent, genome: sub } as LiveAgent;
+      return { kind: sub.kind, diag: diagnoseAgent(subAgent, ctx) };
+    });
+    const priority: Record<DiagStatus, number> = { "would-enter": 3, "watching": 2, "in-position": 4, "no-data": 1 };
+    subDiags.sort((a, b) => (priority[b.diag.status] ?? 0) - (priority[a.diag.status] ?? 0));
+    const best = subDiags[0];
+    const summary = subDiags.map((s) => s.kind.split("_").map((p) => p.slice(0, 3)).join("-")).join("+");
+    return {
+      status: best.diag.status,
+      label: `multi[${summary}] · best=${best.kind.replace("_", " ").slice(0, 14)}: ${best.diag.label.slice(0, 32)}`,
+    };
+  }
   switch (g.kind) {
     case "cb_momentum_burst": {
       const p = g.params;
