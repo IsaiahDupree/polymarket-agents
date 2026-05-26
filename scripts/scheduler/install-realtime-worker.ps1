@@ -63,7 +63,9 @@ Register-ScheduledTask `
     -Description "Runs PolymarketAutomation WS worker:realtime under a supervisor that respawns on crash. Logs to data/scheduler/worker-realtime.<date>.log." | Out-Null
 
 Write-Host "Task '$TaskName' installed — starts at logon, supervisor restarts on crash." -ForegroundColor Green
-Write-Host "  Logs:   <repo>\data\scheduler\worker-realtime.<date>.log"
+# Single-quoted lines so PowerShell doesn't try to interpret < as a
+# redirection operator on the literal '<repo>' / '<date>' placeholders.
+Write-Host '  Logs:   (repo)/data/scheduler/worker-realtime.(date).log'
 Write-Host "  Manage: Get-ScheduledTask -TaskName $TaskName"
 Write-Host "  Start:  Start-ScheduledTask -TaskName $TaskName"
-Write-Host "  Remove: powershell -ExecutionPolicy Bypass -File .\uninstall-realtime-worker.ps1"
+Write-Host '  Remove: powershell -ExecutionPolicy Bypass -File .\uninstall-realtime-worker.ps1'
