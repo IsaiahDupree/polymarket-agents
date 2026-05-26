@@ -85,5 +85,27 @@ export function aggressivePresets(opts: { polyConditionIdPool?: string[] } = {})
         },
       },
     },
+    // (5) Category specialist (majorexploiter archetype) — focuses on the
+    // category with most live markets in our snapshot universe. We pick
+    // 'crypto' as default since Polymarket's crypto markets are the most
+    // liquid and our snapshot worker pulls them heavily.
+    {
+      nick: "agg-cat-crypto",
+      genome: {
+        kind: "category_specialist",
+        params: {
+          category: "crypto",
+          inner_strategy: "fade_spike",
+          threshold_pts: 3,       // minimum fadeable move
+          lookback_h: 6,          // shortest lookback
+          confirm_quiet_h: 2,
+          entry_size_usd: 15,
+          exit_target_pts: 2,
+          stop_pts: 4,
+          time_stop_h: 24,
+          breakout_mult: 1.10,    // unused for fade_spike inner; keep within bounds
+        },
+      },
+    },
   ];
 }

@@ -161,6 +161,32 @@ export function diagnoseAgent(agent: LiveAgent, ctx: TickContext): AgentDiagnost
         label: `trade_prob=${(p.trade_prob * 100).toFixed(1)}% per tick`,
       };
     }
+    case "category_specialist": {
+      const p = g.params;
+      // Count candidates in the chosen category.
+      let candidates = 0;
+      let bestMove = 0;
+      for (const [, win] of ctx.snapshots) {
+        if (win.latest.venue !== "sim-poly") continue;
+        if (win.latest.category !== p.category) continue;
+        candidates += 1;
+        if (p.inner_strategy === "fade_spike") {
+          const lookbackSnap = nthFromEnd(win.history, p.lookback_h * 60, ctx.now);
+          if (!lookbackSnap) continue;
+          const move = Math.abs((win.latest.price - lookbackSnap.price) * 100);
+          if (move > bestMove) bestMove = move;
+        }
+      }
+      if (candidates === 0) {
+        return { status: "no-data", label: `no ${p.category} markets in ctx` };
+      }
+      const inner = p.inner_strategy === "fade_spike" ? "fs" : "bo";
+      const fires = p.inner_strategy === "fade_spike" && bestMove >= p.threshold_pts;
+      return {
+        status: fires ? "would-enter" : "watching",
+        label: `${p.category}/${inner} · ${candidates} mkts · best=${bestMove.toFixed(1)}pt / ≥${p.threshold_pts.toFixed(1)}pt`,
+      };
+    }
   }
 }
 

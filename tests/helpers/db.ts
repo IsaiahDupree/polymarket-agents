@@ -24,6 +24,7 @@ export function makeMemoryDb(): Database.Database {
   ensureColumn(db, "paper_generations", "tick_count", "tick_count INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "capsules", "paper_agent_id", "paper_agent_id INTEGER REFERENCES paper_agents(id)");
   ensureColumn(db, "paper_agents", "entries_count", "entries_count INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "market_snapshots", "category", "category TEXT");
   // Also create the tracked_wallets + wallet_fills tables that live outside the main schema file
   db.exec(`
     CREATE TABLE IF NOT EXISTS tracked_wallets (

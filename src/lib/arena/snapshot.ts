@@ -6,6 +6,7 @@
 import { poly } from "@/lib/polymarket/client";
 import { cb } from "@/lib/coinbase/client";
 import { recordMarketSnapshot } from "@/lib/db/queries";
+import { classifyMarket } from "@/lib/polymarket/category";
 import { db } from "@/lib/db/client";
 
 // Env defaults read at CALL time (not module load) so tests can swap them
@@ -133,10 +134,12 @@ export async function runSnapshotPass(opts: { polyLimit?: number; cbProducts?: s
       ]);
       const midVal = mid ? Number((mid as { mid: string }).mid) : null;
       const spreadVal = spread ? Number((spread as { spread: string }).spread) : null;
+      const question = (m as any).question ?? "(no question)";
+      const slug = (m as any).market_slug ?? (m as any).slug ?? undefined;
       recordMarketSnapshot({
         condition_id: (m as any).condition_id,
         token_id: tokenId,
-        question: (m as any).question ?? "(no question)",
+        question,
         yes_price: Number(yes?.price ?? midVal ?? 0) || null,
         no_price: Number(no?.price ?? (midVal != null ? 1 - midVal : 0)) || null,
         midpoint: midVal,
@@ -144,6 +147,7 @@ export async function runSnapshotPass(opts: { polyLimit?: number; cbProducts?: s
         volume_24h: (m as any).volume_24hr ?? null,
         open_interest: (m as any).open_interest ?? null,
         liquidity_usd: (m as any).liquidity ?? null,
+        category: classifyMarket(question, slug),
       });
       polyCount += 1;
     }

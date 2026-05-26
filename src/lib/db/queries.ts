@@ -1,4 +1,4 @@
-import { db } from "./client.ts";
+import { db } from "./client";
 
 export type Agent = {
   id: number;
@@ -134,14 +134,17 @@ export function recordMarketSnapshot(snapshot: {
   volume_24h?: number | null;
   open_interest?: number | null;
   liquidity_usd?: number | null;
+  /** Category tag from `classifyMarket`. Optional — caller passes when known
+   *  (snapshot worker has the question, so always passes). */
+  category?: string | null;
 }) {
   return db()
     .prepare(
       `INSERT INTO market_snapshots
-         (condition_id, token_id, question, yes_price, no_price, midpoint, spread, volume_24h, open_interest, liquidity_usd)
-       VALUES (@condition_id, @token_id, @question, @yes_price, @no_price, @midpoint, @spread, @volume_24h, @open_interest, @liquidity_usd)`,
+         (condition_id, token_id, question, yes_price, no_price, midpoint, spread, volume_24h, open_interest, liquidity_usd, category)
+       VALUES (@condition_id, @token_id, @question, @yes_price, @no_price, @midpoint, @spread, @volume_24h, @open_interest, @liquidity_usd, @category)`,
     )
-    .run(snapshot);
+    .run({ category: null, ...snapshot });
 }
 
 export function latestSnapshotFor(tokenId: string) {

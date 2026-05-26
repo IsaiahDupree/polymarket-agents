@@ -44,6 +44,11 @@ export type Snapshot = {
   price: number;            // unified: poly midpoint OR coinbase mid (best_bid + best_ask)/2
   bid?: number;
   ask?: number;
+  /** Polymarket-only: classified market category (geopolitics, elections, etc.).
+   *  Populated by `classifyMarket` in the snapshot worker. category_specialist
+   *  genomes filter their candidate list by this field. Undefined for Coinbase
+   *  snapshots and for poly rows pre-dating the classifier. */
+  category?: string;
   captured_at: string;
 };
 

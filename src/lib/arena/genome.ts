@@ -76,6 +76,23 @@ const RandomWalkBaseline = z.object({
   entry_size_usd: num(5, 50),
 }).strict();
 
+const CategorySpecialist = z.object({
+  // Polymarket archetype inspired by majorexploiter ($2.4M in March 2026,
+  // geopolitics+elections only — laser-focused single-category trader).
+  // Internally reuses fade-spike OR breakout logic but only considers markets
+  // tagged with the chosen category. PRD lunar-inspired §6.2.R2.
+  category: z.enum(["geopolitics", "elections", "crypto", "sports", "macro", "weather", "tech", "other"]),
+  inner_strategy: z.enum(["fade_spike", "breakout"]),
+  threshold_pts: num(3, 15),
+  lookback_h: num(6, 72),
+  confirm_quiet_h: num(2, 24),
+  entry_size_usd: num(5, 100),
+  exit_target_pts: num(1, 10),
+  stop_pts: num(2, 15),
+  time_stop_h: num(12, 168),
+  breakout_mult: num(1.05, 3.0),
+}).strict();
+
 const CbMomentumBurst = z.object({
   product_id: z.enum(["BTC-USD", "ETH-USD", "SOL-USD"]),
   vel_window_min: num(3, 30),              // 1-min candles → short window
@@ -98,6 +115,7 @@ export const GenomeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("cross_venue_arb"),      params: CrossVenueArb }),
   z.object({ kind: z.literal("cb_momentum_burst"),    params: CbMomentumBurst }),
   z.object({ kind: z.literal("random_walk_baseline"), params: RandomWalkBaseline }),
+  z.object({ kind: z.literal("category_specialist"),  params: CategorySpecialist }),
 ]);
 
 export type Genome = z.infer<typeof GenomeSchema>;
@@ -111,6 +129,7 @@ export const GENOME_KINDS: GenomeKind[] = [
   "cross_venue_arb",
   "cb_momentum_burst",
   "random_walk_baseline",
+  "category_specialist",
 ];
 
 const PARAM_BOUNDS: Record<GenomeKind, Record<string, [number, number] | string[]>> = {
@@ -155,6 +174,13 @@ const PARAM_BOUNDS: Record<GenomeKind, Record<string, [number, number] | string[
   },
   random_walk_baseline: {
     trade_prob: [0.001, 0.10], buy_bias_pct: [0.30, 0.70], entry_size_usd: [5, 50],
+  },
+  category_specialist: {
+    category: ["geopolitics", "elections", "crypto", "sports", "macro", "weather", "tech", "other"],
+    inner_strategy: ["fade_spike", "breakout"],
+    threshold_pts: [3, 12], lookback_h: [6, 72], confirm_quiet_h: [2, 24],
+    entry_size_usd: [5, 100], exit_target_pts: [1, 8], stop_pts: [2, 10],
+    time_stop_h: [12, 168], breakout_mult: [1.05, 2.5],
   },
 };
 
@@ -222,5 +248,6 @@ export function genomeNickname(g: Genome): string {
     case "cross_venue_arb": return `xv-${(g.params.cb_product_id ?? "BTC-USD").toLowerCase().replace("-usd", "")}`;
     case "cb_momentum_burst": return `mom-${(g.params.product_id ?? "BTC-USD").toLowerCase().replace("-usd", "")}`;
     case "random_walk_baseline": return "rand";
+    case "category_specialist": return `cat-${g.params.category}-${g.params.inner_strategy === "breakout" ? "bo" : "fs"}`;
   }
 }

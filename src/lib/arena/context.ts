@@ -19,11 +19,12 @@ function isoMinus(days: number): string {
 
 function loadPolySnapshots(sinceIso: string): Snapshot[] {
   return (db().prepare(
-    `SELECT token_id AS market_id, midpoint AS price, yes_price, no_price, spread, captured_at
+    `SELECT token_id AS market_id, midpoint AS price, yes_price, no_price, spread, category, captured_at
        FROM market_snapshots WHERE captured_at >= ? AND midpoint IS NOT NULL`,
   ).all(sinceIso) as any[]).map((r): Snapshot => ({
     venue: "sim-poly" as Venue, market_id: r.market_id,
     price: Number(r.price ?? 0), captured_at: r.captured_at,
+    category: r.category ?? undefined,
   }));
 }
 

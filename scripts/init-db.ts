@@ -17,6 +17,11 @@ function ensureColumn(table: string, column: string, ddlFragment: string): void 
 ensureColumn("strategy_versions", "stage", "stage TEXT NOT NULL DEFAULT 'sim'");
 ensureColumn("paper_generations", "tick_count", "tick_count INTEGER NOT NULL DEFAULT 0");
 ensureColumn("capsules", "paper_agent_id", "paper_agent_id INTEGER REFERENCES paper_agents(id)");
+// category tag for Polymarket markets — populated by the keyword classifier
+// in `src/lib/polymarket/category.ts` so category_specialist genomes (and
+// future wallet-copy-filtered) can route by category dominance. NULL = not
+// yet classified.
+ensureColumn("market_snapshots", "category", "category TEXT");
 // entries_count tracks the count of ENTRY trades (one bump per applySignal
 // entry). trades_count continues to count round-trips (bumps on exit), so
 // win-rate denominators stay correct. Both columns are tracked because the

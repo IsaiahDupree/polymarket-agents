@@ -229,6 +229,57 @@ function decideCbMomentumBurst(g: Extract<Genome, { kind: "cb_momentum_burst" }>
   return holdSignal();
 }
 
+function decideCategorySpecialist(g: Extract<Genome, { kind: "category_specialist" }>, agent: LiveAgent, ctx: TickContext): Signal {
+  // Filter poly markets to the chosen category. Inner strategy is either
+  // fade-spike (against extended moves) or breakout (with strong moves). The
+  // archetype is majorexploiter — laser focus on one category, ignore the rest.
+  for (const [mid, win] of ctx.snapshots) {
+    if (win.latest.venue !== "sim-poly") continue;
+    if (win.latest.category !== g.params.category) continue;
+    if (agent.positions.some((p) => p.market_id === mid)) continue;
+    if (g.params.inner_strategy === "fade_spike") {
+      const lookbackSnap = nthFromEnd(win.history, g.params.lookback_h * 60, ctx.now);
+      const confirmSnap = nthFromEnd(win.history, g.params.confirm_quiet_h * 60, ctx.now);
+      if (!lookbackSnap || !confirmSnap) continue;
+      const ptsMove = (win.latest.price - lookbackSnap.price) * 100;
+      const ptsQuiet = Math.abs((win.latest.price - confirmSnap.price) * 100);
+      if (Math.abs(ptsMove) >= g.params.threshold_pts && ptsQuiet <= g.params.threshold_pts / 2) {
+        const side: "BUY" | "SELL" = ptsMove > 0 ? "SELL" : "BUY";
+        const target = side === "BUY"
+          ? win.latest.price + g.params.exit_target_pts / 100
+          : win.latest.price - g.params.exit_target_pts / 100;
+        const stop = side === "BUY"
+          ? win.latest.price - g.params.stop_pts / 100
+          : win.latest.price + g.params.stop_pts / 100;
+        return {
+          kind: "entry", venue: "sim-poly", market_id: mid, side,
+          size_usd: Math.min(g.params.entry_size_usd, agent.cash_usd_current),
+          rationale: `category=${g.params.category} fade ${ptsMove.toFixed(1)}pt`,
+          target_price: target, stop_price: stop,
+          time_stop_at: new Date(new Date(ctx.now).getTime() + g.params.time_stop_h * 3_600_000).toISOString(),
+        };
+      }
+    } else {
+      // breakout
+      const inWindow = win.history.filter((s) => minutesSince(s.captured_at, ctx.now) <= g.params.lookback_h * 60);
+      if (inWindow.length < 4) continue;
+      const recentMax = rollingMax(inWindow);
+      if (win.latest.price > recentMax * g.params.breakout_mult) {
+        const target = win.latest.price + g.params.exit_target_pts / 100;
+        const stop = win.latest.price - g.params.stop_pts / 100;
+        return {
+          kind: "entry", venue: "sim-poly", market_id: mid, side: "BUY",
+          size_usd: Math.min(g.params.entry_size_usd, agent.cash_usd_current),
+          rationale: `category=${g.params.category} breakout above ${recentMax.toFixed(3)}×${g.params.breakout_mult}`,
+          target_price: target, stop_price: stop,
+          time_stop_at: new Date(new Date(ctx.now).getTime() + g.params.time_stop_h * 3_600_000).toISOString(),
+        };
+      }
+    }
+  }
+  return holdSignal();
+}
+
 function decideRandomWalk(g: Extract<Genome, { kind: "random_walk_baseline" }>, agent: LiveAgent, ctx: TickContext, rng: () => number): Signal {
   if (rng() > g.params.trade_prob) return holdSignal();
   const ids = Array.from(ctx.snapshots.keys()).filter((mid) => !agent.positions.some((p) => p.market_id === mid));
@@ -274,6 +325,7 @@ export function decide(agent: LiveAgent, ctx: TickContext, rng: () => number): S
     case "cross_venue_arb":     return decideCrossVenueArb(g, agent, ctx);
     case "cb_momentum_burst":   return decideCbMomentumBurst(g, agent, ctx);
     case "random_walk_baseline": return decideRandomWalk(g, agent, ctx, rng);
+    case "category_specialist":  return decideCategorySpecialist(g, agent, ctx);
   }
 }
 

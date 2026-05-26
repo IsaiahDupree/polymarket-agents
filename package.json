@@ -24,6 +24,7 @@
     "arena:compare-mutation": "tsx scripts/arena-compare-mutation.ts",
     "arena:rebalance-cash": "tsx scripts/arena-rebalance-cash.ts",
     "arena:close-orphans": "tsx scripts/arena-close-orphans.ts",
+    "market:categorize": "tsx scripts/categorize-markets.ts",
     "derive:creds": "tsx scripts/derive-clob-creds.ts",
     "fetch:docs": "bash scripts/fetch-docs.sh",
     "db:init": "tsx scripts/init-db.ts",
