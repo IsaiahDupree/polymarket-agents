@@ -1,0 +1,365 @@
+/**
+ * Arena sim engine — pure decision + bookkeeping functions.
+ *
+ * `decide(agent, ctx)` is called per agent per tick. It returns a `Signal`.
+ * `apply(agent, signal, ctx)` mutates the agent's in-memory state (cash,
+ * positions, MtM, drawdown). The caller is responsible for persisting via
+ * `persistAgentTick` after the per-agent loop finishes.
+ *
+ * Convention: prices are in Polymarket "points" (0..1, in points × 100) for
+ * sim-poly markets, and dollars for sim-coinbase markets.
+ *
+ * Fees: simulated 25 bps taker on Coinbase, 0 bps on Polymarket (matches the
+ * current fee schedule and is set as a constant — agents don't "know" their
+ * fee model, the sim deducts it from realized PnL on exit).
+ */
+import type { Genome } from "./genome";
+import { acceleration, loadRecentCandles, velocity } from "./momentum";
+import type {
+  LiveAgent, PaperTradeRow, Position, Signal, Snapshot, SnapshotWindow, TickContext, Venue,
+} from "./types";
+
+const CB_TAKER_FEE_BPS = 25;
+const POLY_FEE_BPS = 0;
+
+function feeBps(venue: Venue): number {
+  return venue === "sim-coinbase" ? CB_TAKER_FEE_BPS : POLY_FEE_BPS;
+}
+
+function hoursSince(iso: string, now: string): number {
+  return (new Date(now).getTime() - new Date(iso).getTime()) / 3_600_000;
+}
+function minutesSince(iso: string, now: string): number {
+  return (new Date(now).getTime() - new Date(iso).getTime()) / 60_000;
+}
+
+function nthFromEnd(history: Snapshot[], minutesAgo: number, now: string): Snapshot | undefined {
+  const cutoffMs = new Date(now).getTime() - minutesAgo * 60_000;
+  // Walk back from newest to find the first snapshot at or before the cutoff.
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (new Date(history[i].captured_at).getTime() <= cutoffMs) return history[i];
+  }
+  return history[0];
+}
+
+function rollingMax(history: Snapshot[]): number {
+  let m = -Infinity;
+  for (const s of history) if (s.price > m) m = s.price;
+  return m;
+}
+function rollingMean(history: Snapshot[]): number {
+  if (history.length === 0) return 0;
+  let s = 0;
+  for (const x of history) s += x.price;
+  return s / history.length;
+}
+function rollingStdev(history: Snapshot[]): number {
+  if (history.length < 2) return 0;
+  const m = rollingMean(history);
+  let v = 0;
+  for (const x of history) v += (x.price - m) ** 2;
+  return Math.sqrt(v / (history.length - 1));
+}
+
+// ----------------------------------------------------------------------------
+// Per-strategy `decide` implementations.
+// ----------------------------------------------------------------------------
+
+function holdSignal(reason = ""): Signal { return { kind: "hold" } as Signal; }
+
+function decidePolyFadeSpike(g: Extract<Genome, { kind: "poly_fade_spike" }>, agent: LiveAgent, ctx: TickContext): Signal {
+  // Pick the first POLY market we have history on (sim picks the universe).
+  for (const [mid, win] of ctx.snapshots) {
+    if (win.latest.venue !== "sim-poly") continue;
+    const lookbackPriceSnap = nthFromEnd(win.history, g.params.lookback_h * 60, ctx.now);
+    const confirmSnap = nthFromEnd(win.history, g.params.confirm_quiet_h * 60, ctx.now);
+    if (!lookbackPriceSnap || !confirmSnap) continue;
+    const ptsMoveOverLookback = (win.latest.price - lookbackPriceSnap.price) * 100; // poly prices are 0..1, points = ×100
+    const ptsMoveSinceQuiet = Math.abs((win.latest.price - confirmSnap.price) * 100);
+    const alreadyIn = agent.positions.some((p) => p.market_id === mid);
+    if (alreadyIn) continue;
+    if (Math.abs(ptsMoveOverLookback) >= g.params.threshold_pts && ptsMoveSinceQuiet <= g.params.threshold_pts / 2) {
+      const fadeSide = ptsMoveOverLookback > 0 ? "SELL" : "BUY";
+      const target = fadeSide === "BUY"
+        ? win.latest.price + g.params.exit_target_pts / 100
+        : win.latest.price - g.params.exit_target_pts / 100;
+      const stop = fadeSide === "BUY"
+        ? win.latest.price - g.params.stop_pts / 100
+        : win.latest.price + g.params.stop_pts / 100;
+      return {
+        kind: "entry",
+        venue: "sim-poly",
+        market_id: mid,
+        side: fadeSide,
+        size_usd: Math.min(g.params.entry_size_usd, agent.cash_usd_current),
+        rationale: `fade ${ptsMoveOverLookback.toFixed(1)}pt move over ${g.params.lookback_h}h`,
+        target_price: target,
+        stop_price: stop,
+        time_stop_at: new Date(new Date(ctx.now).getTime() + g.params.time_stop_h * 3_600_000).toISOString(),
+      };
+    }
+  }
+  return holdSignal();
+}
+
+function decidePolyBreakout(g: Extract<Genome, { kind: "poly_breakout" }>, agent: LiveAgent, ctx: TickContext): Signal {
+  for (const [mid, win] of ctx.snapshots) {
+    if (win.latest.venue !== "sim-poly") continue;
+    if (agent.positions.some((p) => p.market_id === mid)) continue;
+    const lookbackMin = g.params.lookback_h * 60;
+    const inWindow = win.history.filter((s) => minutesSince(s.captured_at, ctx.now) <= lookbackMin);
+    if (inWindow.length < 4) continue;
+    const recentMax = rollingMax(inWindow);
+    if (win.latest.price > recentMax * g.params.breakout_mult) {
+      const target = win.latest.price + g.params.target_pts / 100;
+      const stop = win.latest.price - g.params.stop_pts / 100;
+      return {
+        kind: "entry", venue: "sim-poly", market_id: mid, side: "BUY",
+        size_usd: Math.min(g.params.entry_size_usd, agent.cash_usd_current),
+        rationale: `breakout above ${recentMax.toFixed(3)} × ${g.params.breakout_mult}`,
+        target_price: target, stop_price: stop,
+        time_stop_at: new Date(new Date(ctx.now).getTime() + g.params.time_stop_h * 3_600_000).toISOString(),
+      };
+    }
+  }
+  return holdSignal();
+}
+
+function decideCbBreakout(g: Extract<Genome, { kind: "cb_breakout" }>, agent: LiveAgent, ctx: TickContext): Signal {
+  const win = ctx.snapshots.get(g.params.product_id);
+  if (!win) return holdSignal();
+  if (agent.positions.some((p) => p.market_id === g.params.product_id)) return holdSignal();
+  const lookbackMin = g.params.lookback_min;
+  const inWindow = win.history.filter((s) => minutesSince(s.captured_at, ctx.now) <= lookbackMin);
+  if (inWindow.length < 4) return holdSignal();
+  const recentMax = rollingMax(inWindow);
+  if (win.latest.price > recentMax * g.params.breakout_mult) {
+    return {
+      kind: "entry", venue: "sim-coinbase", market_id: g.params.product_id, side: "BUY",
+      size_usd: Math.min(g.params.entry_size_usd, agent.cash_usd_current),
+      rationale: `cb breakout above ${recentMax.toFixed(2)} × ${g.params.breakout_mult}`,
+      target_price: win.latest.price * (1 + g.params.target_pct),
+      stop_price: win.latest.price * (1 - g.params.stop_pct),
+      time_stop_at: new Date(new Date(ctx.now).getTime() + g.params.time_stop_min * 60_000).toISOString(),
+    };
+  }
+  return holdSignal();
+}
+
+function decideCbMeanReversion(g: Extract<Genome, { kind: "cb_mean_reversion" }>, agent: LiveAgent, ctx: TickContext): Signal {
+  const win = ctx.snapshots.get(g.params.product_id);
+  if (!win) return holdSignal();
+  if (agent.positions.some((p) => p.market_id === g.params.product_id)) return holdSignal();
+  const inWindow = win.history.filter((s) => minutesSince(s.captured_at, ctx.now) <= g.params.lookback_min);
+  if (inWindow.length < 12) return holdSignal();
+  const mean = rollingMean(inWindow);
+  const sd = rollingStdev(inWindow);
+  if (sd <= 0) return holdSignal();
+  const z = (win.latest.price - mean) / sd;
+  if (z <= -g.params.z_entry) {
+    return {
+      kind: "entry", venue: "sim-coinbase", market_id: g.params.product_id, side: "BUY",
+      size_usd: Math.min(g.params.entry_size_usd, agent.cash_usd_current),
+      rationale: `mean-revert BUY at z=${z.toFixed(2)} (mean=${mean.toFixed(2)})`,
+      target_price: mean + g.params.z_exit * sd,
+      stop_price: win.latest.price * (1 - g.params.stop_pct),
+      time_stop_at: new Date(new Date(ctx.now).getTime() + g.params.time_stop_min * 60_000).toISOString(),
+    };
+  }
+  return holdSignal();
+}
+
+function decideCrossVenueArb(g: Extract<Genome, { kind: "cross_venue_arb" }>, agent: LiveAgent, ctx: TickContext): Signal {
+  // Requires the caller to populate ctx.bsImpliedProb (BS-implied prob computed
+  // off the Coinbase spot + recent realized vol) and ctx.polyImpliedProb. If not
+  // populated, hold. Full implementation lives in the cross-venue worker.
+  if (!ctx.bsImpliedProb || !ctx.polyImpliedProb) return holdSignal();
+  const polyProb = ctx.polyImpliedProb.get(g.params.poly_condition_id);
+  const bsProb = ctx.bsImpliedProb.get(g.params.poly_condition_id);
+  if (polyProb === undefined || bsProb === undefined) return holdSignal();
+  const spreadPts = (polyProb - bsProb) * 100;
+  if (Math.abs(spreadPts) < g.params.edge_pts) return holdSignal();
+  if (agent.positions.some((p) => p.market_id === g.params.poly_condition_id)) return holdSignal();
+  const fadeSide = spreadPts > 0 ? "SELL" : "BUY";
+  return {
+    kind: "entry", venue: "sim-poly", market_id: g.params.poly_condition_id, side: fadeSide,
+    size_usd: Math.min(g.params.entry_size_usd, agent.cash_usd_current),
+    rationale: `xv-arb: poly=${(polyProb * 100).toFixed(1)}% vs bs=${(bsProb * 100).toFixed(1)}% → ${spreadPts.toFixed(1)}pt`,
+    time_stop_at: new Date(new Date(ctx.now).getTime() + g.params.time_stop_h * 3_600_000).toISOString(),
+  };
+}
+
+function decideCbMomentumBurst(g: Extract<Genome, { kind: "cb_momentum_burst" }>, agent: LiveAgent, ctx: TickContext): Signal {
+  const win = ctx.snapshots.get(g.params.product_id);
+  if (!win) return holdSignal();
+  if (agent.positions.some((p) => p.market_id === g.params.product_id)) return holdSignal();
+  // Pull 1-min candles up to "now" — replay mode uses simulated now.
+  const cutoffUnix = Math.floor(new Date(ctx.now).getTime() / 1000);
+  const lookbackMin = Math.max(g.params.vel_window_min * 2 + 5, 30);
+  const candles = loadRecentCandles(g.params.product_id, lookbackMin, { cutoffUnix });
+  if (candles.length < g.params.vel_window_min + 2) return holdSignal();
+  const v = velocity(candles, g.params.vel_window_min);
+  const a = acceleration(candles, g.params.vel_window_min);
+  if (!Number.isFinite(v) || !Number.isFinite(a)) return holdSignal();
+
+  // Long: price rising AND momentum building.
+  if (v >= g.params.vel_entry_pct && a >= g.params.accel_min) {
+    const px = win.latest.price;
+    return {
+      kind: "entry", venue: "sim-coinbase", market_id: g.params.product_id, side: "BUY",
+      size_usd: Math.min(g.params.entry_size_usd, agent.cash_usd_current),
+      rationale: `momentum-burst LONG v=${(v * 100).toFixed(2)}% a=${(a * 100).toFixed(3)}%`,
+      target_price: px * (1 + g.params.target_pct),
+      stop_price: px * (1 - g.params.stop_pct),
+      time_stop_at: new Date(new Date(ctx.now).getTime() + g.params.time_stop_min * 60_000).toISOString(),
+    };
+  }
+  // Short: only when direction_bias allows it. Sells the asset on the way down.
+  if (g.params.direction_bias === "long_short" && v <= -g.params.vel_entry_pct && a <= -g.params.accel_min) {
+    const px = win.latest.price;
+    return {
+      kind: "entry", venue: "sim-coinbase", market_id: g.params.product_id, side: "SELL",
+      size_usd: Math.min(g.params.entry_size_usd, agent.cash_usd_current),
+      rationale: `momentum-burst SHORT v=${(v * 100).toFixed(2)}% a=${(a * 100).toFixed(3)}%`,
+      target_price: px * (1 - g.params.target_pct),
+      stop_price: px * (1 + g.params.stop_pct),
+      time_stop_at: new Date(new Date(ctx.now).getTime() + g.params.time_stop_min * 60_000).toISOString(),
+    };
+  }
+  return holdSignal();
+}
+
+function decideRandomWalk(g: Extract<Genome, { kind: "random_walk_baseline" }>, agent: LiveAgent, ctx: TickContext, rng: () => number): Signal {
+  if (rng() > g.params.trade_prob) return holdSignal();
+  const ids = Array.from(ctx.snapshots.keys()).filter((mid) => !agent.positions.some((p) => p.market_id === mid));
+  if (ids.length === 0) return holdSignal();
+  const mid = ids[Math.floor(rng() * ids.length)];
+  const win = ctx.snapshots.get(mid)!;
+  const side = rng() < g.params.buy_bias_pct ? "BUY" : "SELL";
+  return {
+    kind: "entry", venue: win.latest.venue, market_id: mid, side,
+    size_usd: Math.min(g.params.entry_size_usd, agent.cash_usd_current),
+    rationale: "random baseline",
+    time_stop_at: new Date(new Date(ctx.now).getTime() + 4 * 3_600_000).toISOString(),
+  };
+}
+
+/** Master decide dispatcher. */
+export function decide(agent: LiveAgent, ctx: TickContext, rng: () => number): Signal {
+  // Always check exits first — that lets us close before opening a new position.
+  for (const pos of agent.positions) {
+    const win = ctx.snapshots.get(pos.market_id);
+    if (!win) continue;
+    const px = win.latest.price;
+    // Target hit
+    if (pos.target_price !== undefined && ((pos.side === "BUY" && px >= pos.target_price) || (pos.side === "SELL" && px <= pos.target_price))) {
+      return { kind: "exit", venue: pos.venue, market_id: pos.market_id, rationale: `target ${pos.target_price.toFixed(4)} hit` };
+    }
+    // Stop hit
+    if (pos.stop_price !== undefined && ((pos.side === "BUY" && px <= pos.stop_price) || (pos.side === "SELL" && px >= pos.stop_price))) {
+      return { kind: "exit", venue: pos.venue, market_id: pos.market_id, rationale: `stop ${pos.stop_price.toFixed(4)} hit` };
+    }
+    // Time stop
+    if (pos.time_stop_at && ctx.now >= pos.time_stop_at) {
+      return { kind: "exit", venue: pos.venue, market_id: pos.market_id, rationale: "time stop" };
+    }
+  }
+  // No exit fired → decide entry
+  const g = agent.genome;
+  switch (g.kind) {
+    case "poly_fade_spike":     return decidePolyFadeSpike(g, agent, ctx);
+    case "poly_breakout":       return decidePolyBreakout(g, agent, ctx);
+    case "cb_breakout":         return decideCbBreakout(g, agent, ctx);
+    case "cb_mean_reversion":   return decideCbMeanReversion(g, agent, ctx);
+    case "cross_venue_arb":     return decideCrossVenueArb(g, agent, ctx);
+    case "cb_momentum_burst":   return decideCbMomentumBurst(g, agent, ctx);
+    case "random_walk_baseline": return decideRandomWalk(g, agent, ctx, rng);
+  }
+}
+
+// ----------------------------------------------------------------------------
+// Bookkeeping — apply a signal to an in-memory agent, mark-to-market.
+// ----------------------------------------------------------------------------
+
+export type ApplyResult = {
+  trade?: Omit<PaperTradeRow, "id" | "tick_at" | "generation"> & { tick_at: string; generation: number };
+  exitOf?: Position;        // when exiting, the closed position is returned for caller to link
+};
+
+export function applySignal(agent: LiveAgent, signal: Signal, ctx: TickContext, generation: number): ApplyResult {
+  if (signal.kind === "hold") return {};
+  const tickAt = ctx.now;
+  if (signal.kind === "entry") {
+    const win = ctx.snapshots.get(signal.market_id);
+    if (!win) return {};
+    const px = win.latest.price;
+    const fee = (signal.size_usd * feeBps(signal.venue)) / 10_000;
+    if (signal.size_usd + fee > agent.cash_usd_current) return {};
+    agent.cash_usd_current -= signal.size_usd + fee;
+    const newPos: Position = {
+      venue: signal.venue,
+      market_id: signal.market_id,
+      side: signal.side,
+      size_usd: signal.size_usd,
+      entry_price: px,
+      opened_at: tickAt,
+      target_price: signal.target_price,
+      stop_price: signal.stop_price,
+      time_stop_at: signal.time_stop_at,
+    };
+    agent.positions.push(newPos);
+    agent.entries_count += 1;
+    return {
+      trade: {
+        paper_agent_id: agent.id, venue: signal.venue, market_id: signal.market_id,
+        side: signal.side, intent: "entry", price: px, size_usd: signal.size_usd, fee_usd: fee,
+        realized_pnl_usd: null, linked_entry_id: null, signal_rationale: signal.rationale,
+        tick_at: tickAt, generation,
+      },
+    };
+  }
+  // exit
+  const posIdx = agent.positions.findIndex((p) => p.market_id === signal.market_id);
+  if (posIdx === -1) return {};
+  const pos = agent.positions[posIdx];
+  const win = ctx.snapshots.get(signal.market_id);
+  if (!win) return {};
+  const px = win.latest.price;
+  // PnL: long → (exit - entry) / entry × size; short → (entry - exit) / entry × size
+  const shareRet = pos.side === "BUY" ? (px - pos.entry_price) / pos.entry_price : (pos.entry_price - px) / pos.entry_price;
+  const grossPnl = pos.size_usd * shareRet;
+  const fee = (pos.size_usd * feeBps(pos.venue)) / 10_000;
+  const realized = grossPnl - fee;
+  agent.cash_usd_current += pos.size_usd + realized; // return notional + pnl
+  agent.realized_pnl_usd += realized;
+  agent.trades_count += 1;
+  if (realized > 0) agent.wins_count += 1;
+  agent.positions.splice(posIdx, 1);
+  return {
+    trade: {
+      paper_agent_id: agent.id, venue: pos.venue, market_id: pos.market_id,
+      side: pos.side === "BUY" ? "SELL" : "BUY", // exit side flips
+      intent: "exit", price: px, size_usd: pos.size_usd, fee_usd: fee,
+      realized_pnl_usd: realized, linked_entry_id: pos.entry_trade_id ?? null,
+      signal_rationale: signal.rationale, tick_at: tickAt, generation,
+    },
+    exitOf: pos,
+  };
+}
+
+/** Recompute unrealized PnL across open positions using the latest snapshot. */
+export function markToMarket(agent: LiveAgent, ctx: TickContext): void {
+  let unr = 0;
+  for (const pos of agent.positions) {
+    const win = ctx.snapshots.get(pos.market_id);
+    if (!win) continue;
+    const px = win.latest.price;
+    const shareRet = pos.side === "BUY" ? (px - pos.entry_price) / pos.entry_price : (pos.entry_price - px) / pos.entry_price;
+    unr += pos.size_usd * shareRet;
+  }
+  agent.unrealized_pnl_usd = unr;
+  const equity = agent.cash_usd_current + unr;
+  if (equity > agent.peak_equity_usd) agent.peak_equity_usd = equity;
+  const dd = agent.peak_equity_usd - equity;
+  if (dd > agent.max_drawdown_usd) agent.max_drawdown_usd = dd;
+}

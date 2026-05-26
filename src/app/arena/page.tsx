@@ -1,0 +1,244 @@
+import Link from "next/link";
+import { equityCurvesForAgents, listAliveAgentsAcrossGens, listGenerations, toLiveAgent } from "@/lib/arena/db";
+import { rankAgents } from "@/lib/arena/score";
+import { listEligibleChampionships } from "@/lib/arena/championship";
+import { parseGenome, genomeNickname } from "@/lib/arena/genome";
+import { AutoRefresh } from "@/components/AutoRefresh";
+import { Sparkline } from "@/components/Sparkline";
+import { db } from "@/lib/db/client";
+import { buildLiveTickContext } from "@/lib/arena/context";
+import { diagnoseAgents, type AgentDiagnostic } from "@/lib/arena/diagnostic";
+
+export const dynamic = "force-dynamic";
+
+function fmtPct(n: number): string {
+  return `${(n * 100).toFixed(2)}%`;
+}
+function fmtUsd(n: number): string {
+  return `$${n.toFixed(2)}`;
+}
+
+export default async function ArenaPage() {
+  const alive = listAliveAgentsAcrossGens();
+  const ranked = rankAgents(alive);
+  const gens = listGenerations(10);
+  const eligible = listEligibleChampionships();
+  const currentGen = gens.find((g) => g.sealed_at == null);
+
+  // All-time top agents (any gen, dead or alive) by net PnL — shown above the
+  // current-gen leaderboard so freshly-bred 0-trade agents don't drown out the
+  // actual winners. We include agents whose only activity is entries (no exits
+  // yet) so open positions surface here too — `trades_count` only bumps on
+  // exit, so an EXISTS check against paper_trades is the broader gate.
+  const allTimeTop = db().prepare(
+    `SELECT pa.id, pa.name, pa.generation, pa.alive,
+            pa.cash_usd_start, pa.cash_usd_current,
+            pa.realized_pnl_usd, pa.unrealized_pnl_usd,
+            pa.trades_count, pa.wins_count,
+            json_extract(pa.genome_json, '$.kind') AS kind,
+            (pa.cash_usd_current + pa.unrealized_pnl_usd - pa.cash_usd_start) AS net_pnl,
+            (SELECT COUNT(*) FROM paper_trades pt WHERE pt.paper_agent_id = pa.id AND pt.intent = 'entry') AS entries_count
+       FROM paper_agents pa
+      WHERE EXISTS (SELECT 1 FROM paper_trades pt WHERE pt.paper_agent_id = pa.id)
+      ORDER BY net_pnl DESC, realized_pnl_usd DESC, entries_count DESC
+      LIMIT 10`,
+  ).all() as Array<{ id: number; name: string; generation: number; alive: 0 | 1; cash_usd_start: number; cash_usd_current: number; realized_pnl_usd: number; unrealized_pnl_usd: number; trades_count: number; wins_count: number; kind: string; net_pnl: number; entries_count: number }>;
+
+  // Batched equity curves so each row can render an inline sparkline without
+  // issuing 28+ extra queries.
+  const sparkIds = Array.from(new Set([
+    ...ranked.slice(0, 50).map((r) => r.agent.id),
+    ...allTimeTop.map((r) => r.id),
+  ]));
+  const equityCurves = equityCurvesForAgents(sparkIds);
+
+  // Batched entries count for the current-gen leaderboard so we can show
+  // "Entries" alongside "Trades" (round-trips). An agent with N entries and 0
+  // trades has N positions still open — currently invisible without this.
+  const entriesById = new Map<number, number>();
+  if (sparkIds.length > 0) {
+    const placeholders = sparkIds.map(() => "?").join(",");
+    const rows = db().prepare(
+      `SELECT paper_agent_id, COUNT(*) AS n
+         FROM paper_trades
+        WHERE intent = 'entry' AND paper_agent_id IN (${placeholders})
+        GROUP BY paper_agent_id`,
+    ).all(...sparkIds) as Array<{ paper_agent_id: number; n: number }>;
+    for (const r of rows) entriesById.set(r.paper_agent_id, r.n);
+  }
+
+  // Live decision diagnostic per alive agent — surfaces *why* an agent is
+  // holding (e.g. "v=0.05% / ≥0.22%") so the leaderboard stays informative
+  // even in flat markets where nothing fires.
+  const liveCtx = buildLiveTickContext();
+  const liveAgents = alive.map(toLiveAgent);
+  const diagnostics = diagnoseAgents(liveAgents, liveCtx);
+
+  return (
+    <div className="space-y-8">
+      <AutoRefresh label="arena" />
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">Arena — evolving paper agents</h1>
+        <p className="text-zinc-400 mt-1 text-sm">
+          {ranked.length} alive · gen {currentGen?.gen_number ?? "—"} open ·
+          fitness = pnl% − 2 × max-DD% (TradingBot Arena formula). Top-1 across {process.env.ARENA_CHAMPION_GENS ?? "3"} consecutive sealed gens → eligible for capsule activation.
+        </p>
+      </div>
+
+      <section className="grid grid-cols-4 gap-4">
+        <Stat label="Alive agents" value={ranked.length.toString()} />
+        <Stat label="Generations sealed" value={gens.filter((g) => g.sealed_at != null).length.toString()} />
+        <Stat label="Eligible champions" value={eligible.length.toString()} hint={eligible.length > 0 ? "review on /capsules" : ""} />
+        <Stat label="Mutation mode" value={(process.env.ARENA_MUTATION_MODE ?? "programmatic").toUpperCase()} hint="ARENA_MUTATION_MODE env" />
+      </section>
+
+      {eligible.length > 0 && (
+        <section className="card border-accent-amber/40 bg-accent-amber/5">
+          <h2 className="card-title text-accent-amber">🏆 Championship eligible — needs human approval</h2>
+          <ul className="text-xs space-y-1 mt-2">
+            {eligible.map((c) => (
+              <li key={c.id} className="text-zinc-300">
+                <Link href={`/capsules`} className="hover:text-accent-blue">
+                  championship #{c.id} · agent {c.paper_agent_id} · {c.consecutive_gen_wins} consecutive gen wins → review on /capsules
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {/* All-time top agents — surfaces actual winners even when current gen is fresh */}
+      <section className="card border-accent-blue/30">
+        <div className="flex items-baseline justify-between mb-2">
+          <h2 className="card-title m-0">All-time top agents ({allTimeTop.length})</h2>
+          <span className="text-[10px] text-zinc-500">across every generation · by net PnL</span>
+        </div>
+        {allTimeTop.length === 0 ? (
+          <p className="text-xs text-zinc-500">No agent has traded yet across any generation. Wait for the snapshot worker to fill enough history for momentum / fade strategies to fire.</p>
+        ) : (
+          <table className="list">
+            <thead><tr><th>#</th><th>Agent</th><th>Gen</th><th>Kind</th><th>Status</th><th className="text-right">Start</th><th className="text-right">Equity</th><th className="text-right">Net PnL</th><th className="text-right">Entries</th><th className="text-right">Trades</th><th className="text-right">Win%</th><th>Equity curve</th></tr></thead>
+            <tbody>
+              {allTimeTop.map((r, i) => {
+                const curve = equityCurves.get(r.id) ?? [];
+                const up = curve.length > 1 ? curve[curve.length - 1] >= curve[0] : false;
+                return (
+                <tr key={r.id}>
+                  <td className="text-zinc-500 text-xs">{i + 1}</td>
+                  <td><Link className="text-zinc-100 hover:text-accent-blue" href={`/arena/${r.id}`}>{r.name}</Link></td>
+                  <td className="text-zinc-400 text-xs">g{r.generation}</td>
+                  <td className="text-zinc-400 text-xs">{r.kind?.replace(/_/g, "-")}</td>
+                  <td>{r.alive ? <span className="pill-green">alive</span> : <span className="pill-amber">retired</span>}</td>
+                  <td className="text-right tabular-nums text-zinc-400">${r.cash_usd_start.toFixed(2)}</td>
+                  <td className="text-right tabular-nums">${(r.cash_usd_current + r.unrealized_pnl_usd).toFixed(2)}</td>
+                  <td className={`text-right tabular-nums ${r.net_pnl >= 0 ? "text-accent-green" : "text-accent-red"}`}>{r.net_pnl >= 0 ? "+" : ""}${r.net_pnl.toFixed(2)}</td>
+                  <td className="text-right tabular-nums text-zinc-400">{r.entries_count}</td>
+                  <td className="text-right tabular-nums text-zinc-400">{r.trades_count}</td>
+                  <td className="text-right tabular-nums text-zinc-400">{r.trades_count > 0 ? Math.round((r.wins_count / r.trades_count) * 100) : 0}%</td>
+                  <td><Sparkline values={curve} width={100} height={20} stroke={up ? "#46d39a" : "#ff6e6e"} /></td>
+                </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </section>
+
+      <section className="card">
+        <h2 className="card-title">Current-gen leaderboard ({ranked.length})</h2>
+        {ranked.length === 0 ? (
+          <div className="text-xs text-zinc-400 space-y-2">
+            <p>No alive agents yet. To get started:</p>
+            <ol className="list-decimal list-inside text-zinc-500 space-y-1 ml-2">
+              <li><code className="text-zinc-300">npm run arena:init</code> — seed gen 0 with 8 agents (one of each strategy kind)</li>
+              <li><code className="text-zinc-300">npm run worker:snapshot</code> — pull live Polymarket midpoints + Coinbase top-of-book + 1-min candles</li>
+              <li><code className="text-zinc-300">npm run arena:tick</code> — each alive agent decides; auto-evolves when tick_count hits ARENA_EVOLVE_EVERY (default 6 ticks = 30 min)</li>
+              <li>Or install the Windows Task Scheduler entry once: <code className="text-zinc-300">scripts/scheduler/install-arena-tasks.ps1</code></li>
+            </ol>
+          </div>
+        ) : (
+          <table className="list">
+            <thead>
+              <tr>
+                <th>#</th><th>Agent</th><th>Gen</th><th>Strategy</th><th>Status</th><th className="text-right">Equity</th>
+                <th className="text-right">PnL%</th><th className="text-right">DD%</th><th className="text-right">Fitness</th>
+                <th className="text-right">Entries</th><th className="text-right">Trades</th><th className="text-right">Win%</th><th>Equity curve</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ranked.slice(0, 50).map(({ agent, score }, i) => {
+                const equity = agent.cash_usd_current + agent.unrealized_pnl_usd;
+                const nick = (() => { try { return genomeNickname(parseGenome(agent.genome_json)); } catch { return "?"; } })();
+                const curve = equityCurves.get(agent.id) ?? [];
+                const up = curve.length > 1 ? curve[curve.length - 1] >= curve[0] : false;
+                const diag = diagnostics.get(agent.id);
+                return (
+                  <tr key={agent.id}>
+                    <td className="text-zinc-500 text-xs">{i + 1}</td>
+                    <td><Link className="text-zinc-100 hover:text-accent-blue" href={`/arena/${agent.id}`}>{agent.name}</Link></td>
+                    <td className="text-zinc-400 text-xs">g{agent.generation}</td>
+                    <td className="text-zinc-400 text-xs">{nick}</td>
+                    <td className="text-xs"><DiagCell diag={diag} /></td>
+                    <td className="text-right tabular-nums">{fmtUsd(equity)}</td>
+                    <td className={`text-right tabular-nums ${score.pnl_pct >= 0 ? "text-accent-green" : "text-accent-red"}`}>{fmtPct(score.pnl_pct)}</td>
+                    <td className="text-right tabular-nums text-zinc-400">{fmtPct(score.max_dd_pct)}</td>
+                    <td className={`text-right tabular-nums ${score.fitness >= 0 ? "text-accent-green" : "text-accent-red"}`}>{score.fitness.toFixed(4)}</td>
+                    <td className="text-right tabular-nums text-zinc-400">{entriesById.get(agent.id) ?? 0}</td>
+                    <td className="text-right tabular-nums text-zinc-400">{score.trades_count}</td>
+                    <td className="text-right tabular-nums text-zinc-400">{(score.win_rate * 100).toFixed(0)}%</td>
+                    <td><Sparkline values={curve} width={100} height={20} stroke={up ? "#46d39a" : "#ff6e6e"} /></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </section>
+
+      <section className="card">
+        <h2 className="card-title">Recent generations</h2>
+        <table className="list">
+          <thead><tr><th>Gen</th><th>Status</th><th className="text-right">Agents</th><th className="text-right">Top fitness</th><th>Top agent</th><th>Sealed</th></tr></thead>
+          <tbody>
+            {gens.map((g) => (
+              <tr key={g.id}>
+                <td className="text-zinc-100">g{g.gen_number}</td>
+                <td><span className={g.sealed_at ? "pill-green" : "pill-blue"}>{g.sealed_at ? "sealed" : "open"}</span></td>
+                <td className="text-right tabular-nums">{g.n_agents}</td>
+                <td className="text-right tabular-nums text-zinc-400">{g.top_score != null ? g.top_score.toFixed(4) : "—"}</td>
+                <td className="text-zinc-400 text-xs">{g.top_paper_agent_id ?? "—"}</td>
+                <td className="text-xs text-zinc-500">{g.sealed_at ? new Date(g.sealed_at).toLocaleString() : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+
+      <nav className="text-xs text-zinc-500 flex gap-4">
+        <Link href="/arena/generations" className="hover:text-zinc-300">→ Generations timeline</Link>
+        <Link href="/capsules" className="hover:text-zinc-300">→ Capsules</Link>
+        <Link href="/api/arena/leaderboard" className="hover:text-zinc-300">→ Leaderboard JSON</Link>
+      </nav>
+    </div>
+  );
+}
+
+function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
+  return (
+    <div className="card">
+      <div className="card-title">{label}</div>
+      <div className="stat">{value}</div>
+      {hint && <div className="text-[10px] text-zinc-500 mt-1">{hint}</div>}
+    </div>
+  );
+}
+
+function DiagCell({ diag }: { diag: AgentDiagnostic | undefined }) {
+  if (!diag) return <span className="text-zinc-600">—</span>;
+  const color =
+    diag.status === "would-enter" ? "text-accent-green"
+    : diag.status === "in-position" ? "text-accent-blue"
+    : diag.status === "no-data" ? "text-zinc-600"
+    : "text-zinc-400";
+  return <span className={color} title={diag.detail}>{diag.label}</span>;
+}
