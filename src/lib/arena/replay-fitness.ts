@@ -62,6 +62,9 @@ export function computeReplayFitness(genome: Genome, opts: ReplayFitnessOpts = {
   }
 
   const s = scoreAgent(agent);
+  // Locked principal counts toward ending equity (same bug-fix as scoreAgent).
+  let openPrincipal = 0;
+  for (const p of agent.positions) openPrincipal += p.size_usd;
   return {
     pnl_pct: s.pnl_pct,
     max_dd_pct: s.max_dd_pct,
@@ -69,7 +72,7 @@ export function computeReplayFitness(genome: Genome, opts: ReplayFitnessOpts = {
     trades_count: s.trades_count,
     win_rate: s.win_rate,
     starting_cash: agent.cash_usd_start,
-    ending_equity: agent.cash_usd_current + agent.unrealized_pnl_usd,
+    ending_equity: agent.cash_usd_current + openPrincipal + agent.unrealized_pnl_usd,
     ticks,
   };
 }

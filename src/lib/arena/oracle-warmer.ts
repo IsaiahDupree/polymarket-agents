@@ -13,6 +13,7 @@
  */
 import { callOracle } from "./llm-oracle";
 import { checkBudget } from "./llm-oracle-budget";
+import { liveEquity } from "./score";
 import { db } from "@/lib/db/client";
 import type { LiveAgent, TickContext } from "./types";
 
@@ -38,7 +39,7 @@ export async function warmOracleCacheForTick(agents: LiveAgent[], ctx: TickConte
 
   // Pick the highest-cash oracle agent as the "top-ranked" — proxy for
   // priority. Could be replaced with fitness-rank later.
-  const top = [...oracles].sort((a, b) => (b.cash_usd_current + b.unrealized_pnl_usd) - (a.cash_usd_current + a.unrealized_pnl_usd))[0];
+  const top = [...oracles].sort((a, b) => liveEquity(b) - liveEquity(a))[0];
   if (top.genome.kind !== "llm_probability_oracle") return { attempted: false, reason: "type narrow failed" };
   const params = top.genome.params;
 

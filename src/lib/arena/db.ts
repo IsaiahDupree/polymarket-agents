@@ -142,8 +142,15 @@ export function equityCurveForAgent(agentId: number): Array<{ at: string; equity
     equity += t.realized_pnl_usd ?? 0;
     out.push({ at: t.tick_at, equity });
   }
-  // Append the current mark-to-market point so the line ends at "now".
-  const liveEquity = agent.cash_usd_current + agent.unrealized_pnl_usd;
+  // Append the current mark-to-market point so the line ends at "now". Must
+  // include locked principal (open-position size) so an entry without exit
+  // doesn't appear as a loss equal to its size. Bug-fix 2026-05-25.
+  let openPrincipal = 0;
+  try {
+    const positions = JSON.parse(agent.position_basket_json || "[]") as Array<{ size_usd?: number }>;
+    for (const p of positions) openPrincipal += Number(p.size_usd ?? 0);
+  } catch { /* keep 0 */ }
+  const liveEquity = agent.cash_usd_current + openPrincipal + agent.unrealized_pnl_usd;
   if (out[out.length - 1].equity !== liveEquity) {
     out.push({ at: agent.updated_at, equity: liveEquity });
   }
@@ -161,10 +168,14 @@ export function equityCurvesForAgents(agentIds: number[]): Map<number, number[]>
   const out = new Map<number, number[]>();
   if (agentIds.length === 0) return out;
   const placeholders = agentIds.map(() => "?").join(",");
+  // Include open-position principal via json_each so the tail point reflects
+  // true equity, not "lost the position size on entry". Bug-fix 2026-05-25.
   const agents = db().prepare(
-    `SELECT id, cash_usd_start, cash_usd_current, unrealized_pnl_usd
+    `SELECT id, cash_usd_start, cash_usd_current, unrealized_pnl_usd,
+            IFNULL((SELECT SUM(json_extract(value, '$.size_usd'))
+                      FROM json_each(position_basket_json)), 0) AS open_principal
        FROM paper_agents WHERE id IN (${placeholders})`,
-  ).all(...agentIds) as Array<{ id: number; cash_usd_start: number; cash_usd_current: number; unrealized_pnl_usd: number }>;
+  ).all(...agentIds) as Array<{ id: number; cash_usd_start: number; cash_usd_current: number; unrealized_pnl_usd: number; open_principal: number }>;
   const trades = db().prepare(
     `SELECT paper_agent_id, realized_pnl_usd FROM paper_trades
        WHERE paper_agent_id IN (${placeholders}) AND realized_pnl_usd IS NOT NULL
@@ -179,7 +190,7 @@ export function equityCurvesForAgents(agentIds: number[]): Map<number, number[]>
   }
   for (const a of agents) {
     const series = byAgent.get(a.id) ?? [a.cash_usd_start];
-    const live = a.cash_usd_current + a.unrealized_pnl_usd;
+    const live = a.cash_usd_current + (a.open_principal ?? 0) + a.unrealized_pnl_usd;
     if (series[series.length - 1] !== live) series.push(live);
     out.set(a.id, series);
   }

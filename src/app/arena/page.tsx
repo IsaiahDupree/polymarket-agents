@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { equityCurvesForAgents, listAliveAgentsAcrossGens, listGenerations, toLiveAgent } from "@/lib/arena/db";
-import { rankAgents } from "@/lib/arena/score";
+import { rankAgents, liveEquity } from "@/lib/arena/score";
 import { listEligibleChampionships } from "@/lib/arena/championship";
 import { parseGenome, genomeNickname } from "@/lib/arena/genome";
 import { AutoRefresh } from "@/components/AutoRefresh";
@@ -31,19 +31,27 @@ export default async function ArenaPage() {
   // actual winners. We include agents whose only activity is entries (no exits
   // yet) so open positions surface here too — `trades_count` only bumps on
   // exit, so an EXISTS check against paper_trades is the broader gate.
+  // net_pnl includes locked principal in open positions — counting only
+  // cash+unrealized would treat every open entry as an immediate loss equal
+  // to the position size. Bug-fix 2026-05-25.
   const allTimeTop = db().prepare(
     `SELECT pa.id, pa.name, pa.generation, pa.alive,
             pa.cash_usd_start, pa.cash_usd_current,
             pa.realized_pnl_usd, pa.unrealized_pnl_usd,
             pa.trades_count, pa.wins_count,
             json_extract(pa.genome_json, '$.kind') AS kind,
-            (pa.cash_usd_current + pa.unrealized_pnl_usd - pa.cash_usd_start) AS net_pnl,
+            IFNULL((SELECT SUM(json_extract(value, '$.size_usd'))
+                      FROM json_each(pa.position_basket_json)), 0) AS open_principal,
+            (pa.cash_usd_current + pa.unrealized_pnl_usd
+              + IFNULL((SELECT SUM(json_extract(value, '$.size_usd'))
+                          FROM json_each(pa.position_basket_json)), 0)
+              - pa.cash_usd_start) AS net_pnl,
             (SELECT COUNT(*) FROM paper_trades pt WHERE pt.paper_agent_id = pa.id AND pt.intent = 'entry') AS entries_count
        FROM paper_agents pa
       WHERE EXISTS (SELECT 1 FROM paper_trades pt WHERE pt.paper_agent_id = pa.id)
       ORDER BY net_pnl DESC, realized_pnl_usd DESC, entries_count DESC
       LIMIT 10`,
-  ).all() as Array<{ id: number; name: string; generation: number; alive: 0 | 1; cash_usd_start: number; cash_usd_current: number; realized_pnl_usd: number; unrealized_pnl_usd: number; trades_count: number; wins_count: number; kind: string; net_pnl: number; entries_count: number }>;
+  ).all() as Array<{ id: number; name: string; generation: number; alive: 0 | 1; cash_usd_start: number; cash_usd_current: number; realized_pnl_usd: number; unrealized_pnl_usd: number; trades_count: number; wins_count: number; kind: string; net_pnl: number; entries_count: number; open_principal: number }>;
 
   // Batched equity curves so each row can render an inline sparkline without
   // issuing 28+ extra queries.
@@ -148,7 +156,7 @@ export default async function ArenaPage() {
                   <td className="text-zinc-400 text-xs">{r.kind?.replace(/_/g, "-")}</td>
                   <td>{r.alive ? <span className="pill-green">alive</span> : <span className="pill-amber">retired</span>}</td>
                   <td className="text-right tabular-nums text-zinc-400">${r.cash_usd_start.toFixed(2)}</td>
-                  <td className="text-right tabular-nums">${(r.cash_usd_current + r.unrealized_pnl_usd).toFixed(2)}</td>
+                  <td className="text-right tabular-nums">${(r.cash_usd_current + (r.open_principal ?? 0) + r.unrealized_pnl_usd).toFixed(2)}</td>
                   <td className={`text-right tabular-nums ${r.net_pnl >= 0 ? "text-accent-green" : "text-accent-red"}`}>{r.net_pnl >= 0 ? "+" : ""}${r.net_pnl.toFixed(2)}</td>
                   <td className="text-right tabular-nums text-zinc-400">{r.entries_count}</td>
                   <td className="text-right tabular-nums text-zinc-400">{r.trades_count}</td>
@@ -185,7 +193,7 @@ export default async function ArenaPage() {
             </thead>
             <tbody>
               {ranked.slice(0, 50).map(({ agent, score }, i) => {
-                const equity = agent.cash_usd_current + agent.unrealized_pnl_usd;
+                const equity = liveEquity(agent);
                 const nick = (() => { try { return genomeNickname(parseGenome(agent.genome_json)); } catch { return "?"; } })();
                 const curve = equityCurves.get(agent.id) ?? [];
                 const up = curve.length > 1 ? curve[curve.length - 1] >= curve[0] : false;

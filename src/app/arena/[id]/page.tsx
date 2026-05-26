@@ -2,7 +2,7 @@ import Link from "next/link";
 import { Sparkline } from "@/components/Sparkline";
 import { AutoRefresh } from "@/components/AutoRefresh";
 import { equityCurveForAgent, getPaperAgent, listTradesForAgent, toLiveAgent } from "@/lib/arena/db";
-import { scoreAgent } from "@/lib/arena/score";
+import { scoreAgent, liveEquity } from "@/lib/arena/score";
 import { loadRecentCandles, velocity, acceleration } from "@/lib/arena/momentum";
 import { buildLiveTickContext } from "@/lib/arena/context";
 import { decide } from "@/lib/arena/sim";
@@ -152,7 +152,7 @@ export default async function ArenaAgentDetail({ params }: { params: Promise<{ i
       </section>
 
       <section className="grid grid-cols-4 gap-4">
-        <Stat label="Equity" value={`$${(row.cash_usd_current + row.unrealized_pnl_usd).toFixed(2)}`} hint={`cash $${row.cash_usd_current.toFixed(2)} + unr $${row.unrealized_pnl_usd.toFixed(2)}`} />
+        <Stat label="Equity" value={`$${liveEquity(row).toFixed(2)}`} hint={`cash $${row.cash_usd_current.toFixed(2)} + locked $${(liveEquity(row) - row.cash_usd_current - row.unrealized_pnl_usd).toFixed(2)} + unr $${row.unrealized_pnl_usd.toFixed(2)}`} />
         <Stat label="Realized PnL" value={`$${row.realized_pnl_usd.toFixed(2)}`} className={row.realized_pnl_usd >= 0 ? "text-accent-green" : "text-accent-red"} />
         <Stat label="Fitness" value={score.fitness.toFixed(4)} hint={`${(score.pnl_pct * 100).toFixed(2)}% − 2 × ${(score.max_dd_pct * 100).toFixed(2)}%`} className={score.fitness >= 0 ? "text-accent-green" : "text-accent-red"} />
         <Stat label="Trades / Wins" value={`${row.trades_count} / ${row.wins_count}`} hint={`win rate ${(score.win_rate * 100).toFixed(0)}%`} />

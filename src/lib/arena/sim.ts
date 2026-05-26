@@ -542,10 +542,15 @@ export function applySignal(agent: LiveAgent, signal: Signal, ctx: TickContext, 
   };
 }
 
-/** Recompute unrealized PnL across open positions using the latest snapshot. */
+/** Recompute unrealized PnL across open positions using the latest snapshot.
+ *  Equity = cash + locked principal + unrealized PnL. Counting principal
+ *  matters when positions are open: an entry just locks capital, it doesn't
+ *  destroy it. Bug-fix 2026-05-25. */
 export function markToMarket(agent: LiveAgent, ctx: TickContext): void {
   let unr = 0;
+  let openPrincipal = 0;
   for (const pos of agent.positions) {
+    openPrincipal += pos.size_usd;
     const win = ctx.snapshots.get(pos.market_id);
     if (!win) continue;
     const px = win.latest.price;
@@ -553,7 +558,7 @@ export function markToMarket(agent: LiveAgent, ctx: TickContext): void {
     unr += pos.size_usd * shareRet;
   }
   agent.unrealized_pnl_usd = unr;
-  const equity = agent.cash_usd_current + unr;
+  const equity = agent.cash_usd_current + openPrincipal + unr;
   if (equity > agent.peak_equity_usd) agent.peak_equity_usd = equity;
   const dd = agent.peak_equity_usd - equity;
   if (dd > agent.max_drawdown_usd) agent.max_drawdown_usd = dd;

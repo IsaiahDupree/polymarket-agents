@@ -36,8 +36,41 @@ export const DD_PENALTY = 2.0;
 export const ACTIVITY_BONUS_PER_ENTRY = 0.005;  // +0.5 pp per entry
 export const ACTIVITY_CAP = 5;                  // saturates at 5 entries → max +2.5 pp
 
+/**
+ * Sum of `size_usd` across the agent's currently-open positions. When an
+ * agent enters a position, cash is debited by `size_usd`; the principal is
+ * "locked" in the position until exit. True equity must include this locked
+ * principal — otherwise every open position looks like a loss equal to its
+ * own size. (Bug discovered 2026-05-25 when MM agents with $1 entries
+ * appeared to lose 1% PnL despite price not moving.)
+ *
+ * Safe to JSON.parse here — position_basket_json is written by
+ * persistAgentTick which always JSON.stringify's a typed array.
+ */
+function openPrincipalUsd(a: PaperAgentRow): number {
+  if (!a.position_basket_json || a.position_basket_json === "[]") return 0;
+  try {
+    const positions = JSON.parse(a.position_basket_json) as Array<{ size_usd?: number }>;
+    let s = 0;
+    for (const p of positions) s += Number(p.size_usd ?? 0);
+    return s;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * True equity = cash + locked principal (open positions at entry value) +
+ * unrealized PnL (mark-to-market change since entry).
+ *
+ * Equivalent formulation: cash + sum(size_usd × (1 + shareReturn)).
+ */
+export function liveEquity(a: PaperAgentRow): number {
+  return a.cash_usd_current + openPrincipalUsd(a) + a.unrealized_pnl_usd;
+}
+
 export function scoreAgent(a: PaperAgentRow): Score {
-  const equity = a.cash_usd_current + a.unrealized_pnl_usd;
+  const equity = liveEquity(a);
   const pnl_pct = a.cash_usd_start > 0 ? (equity - a.cash_usd_start) / a.cash_usd_start : 0;
   const peak = a.peak_equity_usd > 0 ? a.peak_equity_usd : a.cash_usd_start;
   const max_dd_pct = peak > 0 ? a.max_drawdown_usd / peak : 0;
