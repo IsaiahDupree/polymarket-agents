@@ -85,19 +85,22 @@ export function aggressivePresets(opts: { polyConditionIdPool?: string[] } = {})
         },
       },
     },
-    // (5) Wallet copy filtered — mirrors HorizonSplendidView in crypto with
-    // tiny size (Quarter-Kelly-equivalent caution at preset stage). Inert
-    // until `wallet_fills` is populated via `npm run backfill:wallet`.
+    // (5) Wallet copy filtered — mirrors a verified-active basket wallet
+    // (memory: project_wallet_intelligence, fingerprinted as
+    // `correlated_basket`). HorizonSplendidView's canonical proxy address
+    // had 0 fills in 50k recent blocks (2026-05-25 backfill), suggesting the
+    // article's address is stale or wallet dormant. Switching to the
+    // verified-active 0xb55f… address keeps this preset informative.
     {
-      nick: "agg-copy-horizon",
+      nick: "agg-copy-basket",
       genome: {
         kind: "wallet_copy_filtered",
         params: {
-          wallet_address: "0x02227b8f5a9636e895607edd3185ed6ee5598ff7", // HorizonSplendidView
+          wallet_address: "0xb55fa1296e6ec55d0ce53d93b9237389f11764d4",
           copy_category: "crypto",
-          size_pct_of_source: 0.005,    // 0.5% of source's trade size
-          max_size_usd: 10,             // hard cap
-          delay_min: 30,                // copy fills < 30 min old
+          size_pct_of_source: 0.005,
+          max_size_usd: 10,
+          delay_min: 30,
           min_source_win_rate: 0.55,
           min_source_trades: 10,
         },
