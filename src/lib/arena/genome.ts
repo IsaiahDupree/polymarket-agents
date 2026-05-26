@@ -126,6 +126,19 @@ const CbMomentumBurst = z.object({
   direction_bias: z.enum(["long_only", "long_short"]),
 }).strict();
 
+const PolyMarketMaker = z.object({
+  // CemeterySun archetype from Lunar article — collects spread on a single
+  // poly token. Sim-only because real CLOB MM needs single-side limit orders
+  // + cancellation that our adapter doesn't yet expose. Lots of small fills,
+  // tiny edge per trade. Side alternates by entries_count parity (cheap
+  // proxy for inventory rebalance).
+  token_id: z.string().min(3),
+  spread_pts: num(0.5, 5),                  // target round-trip spread
+  stop_pts: num(1, 10),
+  time_stop_h: num(1, 12),
+  entry_size_usd: num(1, 20),               // SMALL — MM is about volume
+}).strict();
+
 const LlmProbabilityOracle = z.object({
   // The "20-line Claude brain" from the Lunar article: AI estimates P_true,
   // EV+Kelly rail (P2) gates and resizes, deterministic execution. Inert by
@@ -164,6 +177,7 @@ export const SubGenomeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("random_walk_baseline"), params: RandomWalkBaseline }),
   z.object({ kind: z.literal("category_specialist"),  params: CategorySpecialist }),
   z.object({ kind: z.literal("wallet_copy_filtered"), params: WalletCopyFiltered }),
+  z.object({ kind: z.literal("polymarket_market_maker"), params: PolyMarketMaker }),
   z.object({ kind: z.literal("llm_probability_oracle"), params: LlmProbabilityOracle }),
 ]);
 
@@ -194,6 +208,7 @@ export const GenomeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("random_walk_baseline"), params: RandomWalkBaseline }),
   z.object({ kind: z.literal("category_specialist"),  params: CategorySpecialist }),
   z.object({ kind: z.literal("wallet_copy_filtered"), params: WalletCopyFiltered }),
+  z.object({ kind: z.literal("polymarket_market_maker"), params: PolyMarketMaker }),
   z.object({ kind: z.literal("llm_probability_oracle"), params: LlmProbabilityOracle }),
   z.object({ kind: z.literal("multi_strategy"),       params: MultiStrategy }),
 ]);
@@ -211,6 +226,7 @@ export const GENOME_KINDS: GenomeKind[] = [
   "random_walk_baseline",
   "category_specialist",
   "wallet_copy_filtered",
+  "polymarket_market_maker",
   "llm_probability_oracle",
   "multi_strategy",
 ];
@@ -284,6 +300,14 @@ const PARAM_BOUNDS: Record<GenomeKind, Record<string, [number, number] | string[
     selection: ["priority"],
     entry_size_usd: [5, 100],
   },
+  polymarket_market_maker: {
+    // token_id is opaque to bounds — randomGenome picks from opts.polyTokenPool
+    // when seeding, falling back to a sentinel "any" the decide function honors.
+    spread_pts: [0.5, 5],
+    stop_pts: [1, 10],
+    time_stop_h: [1, 12],
+    entry_size_usd: [1, 20],
+  },
   llm_probability_oracle: {
     model: ["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
     // category_filter is optional — randomGenome leaves it undefined when
@@ -314,7 +338,7 @@ export function clamp(x: number, lo: number, hi: number): number {
 export function randomGenome(
   rng: () => number,
   kind?: GenomeKind,
-  opts: { polyConditionIdPool?: string[]; walletPool?: string[] } = {},
+  opts: { polyConditionIdPool?: string[]; walletPool?: string[]; polyTokenPool?: string[] } = {},
 ): Genome {
   const chosen = kind ?? GENOME_KINDS[Math.floor(rng() * GENOME_KINDS.length)];
   // multi_strategy needs special handling — `subs` array can't be sampled
@@ -360,6 +384,12 @@ export function randomGenome(
     params.wallet_address = pool[Math.floor(rng() * Math.max(1, pool.length))]
       ?? "0x02227b8f5a9636e895607edd3185ed6ee5598ff7";
   }
+  if (chosen === "polymarket_market_maker") {
+    const pool = opts.polyTokenPool ?? [];
+    // Use a real liquid token from the pool, or a sentinel that decide() can
+    // resolve at tick time to any available poly market.
+    params.token_id = pool[Math.floor(rng() * Math.max(1, pool.length))] ?? "any";
+  }
   if (chosen === "llm_probability_oracle") {
     params.prompt_version = "v1";
     // max_calls_per_tick is an integer
@@ -399,6 +429,7 @@ export function genomeNickname(g: Genome): string {
     case "random_walk_baseline": return "rand";
     case "category_specialist": return `cat-${g.params.category}-${g.params.inner_strategy === "breakout" ? "bo" : "fs"}`;
     case "wallet_copy_filtered": return `copy-${g.params.wallet_address.slice(2, 8)}-${g.params.copy_category}`;
+    case "polymarket_market_maker": return `mm-${g.params.token_id === "any" ? "any" : g.params.token_id.slice(0, 6)}-s${g.params.spread_pts.toFixed(1)}`;
     case "llm_probability_oracle": return `oracle-${g.params.model.includes("opus") ? "opus" : g.params.model.includes("sonnet") ? "sonnet" : "haiku"}${g.params.category_filter ? `-${g.params.category_filter}` : ""}`;
     case "multi_strategy": {
       const subKinds = g.params.subs.map((s) => s.kind.replace("cb_", "").replace("poly_", "").slice(0, 4));

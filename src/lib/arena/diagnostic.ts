@@ -203,6 +203,28 @@ export function diagnoseAgent(agent: LiveAgent, ctx: TickContext): AgentDiagnost
         detail: `latest: ${fills[0].side} ${fills[0].token_id.slice(0, 8)}… @ ${fills[0].price?.toFixed(3)}`,
       };
     }
+    case "polymarket_market_maker": {
+      const p = g.params;
+      let mid: string | null = null;
+      if (p.token_id !== "any" && ctx.snapshots.has(p.token_id)) {
+        mid = p.token_id;
+      } else {
+        for (const [tokenId, win] of ctx.snapshots) {
+          if (win.latest.venue !== "sim-poly") continue;
+          if (win.latest.price <= 0.05 || win.latest.price >= 0.95) continue;
+          mid = tokenId;
+          break;
+        }
+      }
+      if (!mid) return { status: "no-data", label: "no liquid poly mkts" };
+      const win = ctx.snapshots.get(mid)!;
+      const side = agent.entries_count % 2 === 0 ? "BUY" : "SELL";
+      return {
+        status: "would-enter",
+        label: `MM ${side}@${win.latest.price.toFixed(3)} · spread=${p.spread_pts}pt`,
+        detail: `target=${(p.token_id === "any" ? "any-liquid" : p.token_id.slice(0, 12))}`,
+      };
+    }
     case "llm_probability_oracle": {
       const p = g.params;
       if (!oracleEnabled()) {

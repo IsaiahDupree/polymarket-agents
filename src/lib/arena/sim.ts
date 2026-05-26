@@ -231,6 +231,40 @@ function decideCbMomentumBurst(g: Extract<Genome, { kind: "cb_momentum_burst" }>
   return holdSignal();
 }
 
+function decidePolyMarketMaker(g: Extract<Genome, { kind: "polymarket_market_maker" }>, agent: LiveAgent, ctx: TickContext): Signal {
+  // CemeterySun archetype: alternate small BUY/SELL entries on a poly market
+  // to collect spread. Side parity from agent.entries_count gives deterministic
+  // rebalancing without needing to query trade history.
+  // Pick the target token: explicit token_id, or first available liquid market.
+  let mid: string | null = null;
+  if (g.params.token_id !== "any" && ctx.snapshots.has(g.params.token_id)) {
+    mid = g.params.token_id;
+  } else {
+    for (const [tokenId, win] of ctx.snapshots) {
+      if (win.latest.venue !== "sim-poly") continue;
+      if (win.latest.price <= 0.05 || win.latest.price >= 0.95) continue;
+      mid = tokenId;
+      break;
+    }
+  }
+  if (!mid) return holdSignal();
+  if (agent.positions.some((p) => p.market_id === mid)) return holdSignal();
+  const win = ctx.snapshots.get(mid)!;
+  const px = win.latest.price;
+  const side: "BUY" | "SELL" = agent.entries_count % 2 === 0 ? "BUY" : "SELL";
+  // Each side collects HALF the spread when its target hits.
+  const halfSpread = g.params.spread_pts / 200;
+  const target = side === "BUY" ? px + halfSpread : px - halfSpread;
+  const stop = side === "BUY" ? px - g.params.stop_pts / 100 : px + g.params.stop_pts / 100;
+  return {
+    kind: "entry", venue: "sim-poly", market_id: mid, side,
+    size_usd: Math.min(g.params.entry_size_usd, agent.cash_usd_current),
+    rationale: `MM-${side}@${px.toFixed(3)} spread=${g.params.spread_pts}pt`,
+    target_price: target, stop_price: stop,
+    time_stop_at: new Date(new Date(ctx.now).getTime() + g.params.time_stop_h * 3_600_000).toISOString(),
+  };
+}
+
 function decideLlmProbabilityOracle(g: Extract<Genome, { kind: "llm_probability_oracle" }>, agent: LiveAgent, ctx: TickContext): Signal {
   // Synchronous — reads ONLY the oracle cache. The async warmer
   // (warmOracleCacheForTick) ran before this in the tick loop and may have
@@ -297,6 +331,7 @@ function decideForSub(g: import("./genome").SubGenome, agent: LiveAgent, ctx: Ti
     case "random_walk_baseline": return decideRandomWalk(g, agent, ctx, rng);
     case "category_specialist":  return decideCategorySpecialist(g, agent, ctx);
     case "wallet_copy_filtered": return decideWalletCopyFiltered(g, agent, ctx);
+    case "polymarket_market_maker": return decidePolyMarketMaker(g, agent, ctx);
     case "llm_probability_oracle": return decideLlmProbabilityOracle(g, agent, ctx);
   }
 }
@@ -431,6 +466,7 @@ export function decide(agent: LiveAgent, ctx: TickContext, rng: () => number): S
     case "random_walk_baseline": return decideRandomWalk(g, agent, ctx, rng);
     case "category_specialist":  return decideCategorySpecialist(g, agent, ctx);
     case "wallet_copy_filtered":  return decideWalletCopyFiltered(g, agent, ctx);
+    case "polymarket_market_maker": return decidePolyMarketMaker(g, agent, ctx);
     case "llm_probability_oracle": return decideLlmProbabilityOracle(g, agent, ctx);
     case "multi_strategy":        return decideMultiStrategy(g, agent, ctx, rng);
   }

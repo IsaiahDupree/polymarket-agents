@@ -146,7 +146,23 @@ export function aggressivePresets(opts: { polyConditionIdPool?: string[] } = {})
         },
       },
     },
-    // (7) LLM probability oracle — Lunar article's "20-line Claude brain".
+    // (7) Polymarket market maker (CemeterySun archetype, sim-only). Quotes
+    // both sides via alternating small entries on any liquid poly market.
+    // token_id="any" tells decide() to resolve at tick time. PRD §6.4.R4.
+    {
+      nick: "agg-mm-any",
+      genome: {
+        kind: "polymarket_market_maker",
+        params: {
+          token_id: "any",
+          spread_pts: 2,
+          stop_pts: 4,
+          time_stop_h: 4,
+          entry_size_usd: 5,
+        },
+      },
+    },
+    // (8) LLM probability oracle — Lunar article's "20-line Claude brain".
     // AI estimates pTrue; the P2 EV+Kelly rail engages downstream. Inert
     // unless ARENA_LLM_ORACLE_ENABLED=1 (cost gate). One call per tick from
     // the warmer; this agent just reads the cache.
