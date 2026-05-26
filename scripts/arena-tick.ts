@@ -16,6 +16,7 @@ import { applySignal, decide, markToMarket } from "../src/lib/arena/sim.ts";
 import { buildLiveTickContext } from "../src/lib/arena/context.ts";
 import { runEvolveOnce } from "../src/lib/arena/evolve.ts";
 import { findLiveCapsuleForPaperAgent, refreshCapsuleRealtime, routeArenaSignal, supportsLiveRouting } from "../src/lib/arena/live-capsule.ts";
+import { applyRiskRails } from "../src/lib/arena/risk-wrapper.ts";
 
 const EVOLVE_EVERY = Number(process.env.ARENA_EVOLVE_EVERY ?? "50");
 
@@ -34,11 +35,24 @@ const EVOLVE_EVERY = Number(process.env.ARENA_EVOLVE_EVERY ?? "50");
 
   const agents = listAliveAgentsForGen(gen.gen_number).map(toLiveAgent);
   const rng = Math.random;
-  const stats = { decided: 0, entries: 0, exits: 0, holds: 0, live_fills: 0, live_rejects: 0 };
+  const stats = { decided: 0, entries: 0, exits: 0, holds: 0, live_fills: 0, live_rejects: 0, ev_kelly_engaged: 0, ev_kelly_blocked: 0, ev_kelly_resized: 0 };
 
   for (const agent of agents) {
     try {
-      const signal = decide(agent, ctx, rng);
+      let signal = decide(agent, ctx, rng);
+      // EV+Kelly risk wrapper: engages when the genome attached a pTrueEstimate
+      // to the signal (e.g. llm_oracle, wallet_copy). Pass-through otherwise.
+      if (signal.kind === "entry") {
+        const rail = applyRiskRails(signal, ctx, agent);
+        if (!rail.kept) {
+          signal = { kind: "hold" };
+          stats.ev_kelly_blocked += 1;
+        } else if (rail.engaged) {
+          signal = rail.signal;
+          stats.ev_kelly_engaged += 1;
+          if (rail.sizeAdjusted) stats.ev_kelly_resized += 1;
+        }
+      }
       if (signal.kind === "hold") stats.holds += 1;
       if (signal.kind !== "hold") {
         // Route through ExecutionRouter when an agent has a live capsule AND
@@ -77,7 +91,10 @@ const EVOLVE_EVERY = Number(process.env.ARENA_EVOLVE_EVERY ?? "50");
   }
 
   const tickCount = incrementGenerationTickCount(gen.id);
-  console.log(`arena:tick gen=${gen.gen_number} agents=${agents.length} → entries=${stats.entries} exits=${stats.exits} holds=${stats.holds} live=${stats.live_fills}/${stats.live_rejects + stats.live_fills}  tick=${tickCount}/${EVOLVE_EVERY}`);
+  const railStr = stats.ev_kelly_engaged > 0 || stats.ev_kelly_blocked > 0
+    ? ` rails=engaged${stats.ev_kelly_engaged}/blocked${stats.ev_kelly_blocked}/resized${stats.ev_kelly_resized}`
+    : "";
+  console.log(`arena:tick gen=${gen.gen_number} agents=${agents.length} → entries=${stats.entries} exits=${stats.exits} holds=${stats.holds} live=${stats.live_fills}/${stats.live_rejects + stats.live_fills}${railStr}  tick=${tickCount}/${EVOLVE_EVERY}`);
 
   // Auto-evolve trigger
   if (EVOLVE_EVERY > 0 && tickCount >= EVOLVE_EVERY) {

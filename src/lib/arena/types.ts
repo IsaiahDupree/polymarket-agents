@@ -21,8 +21,19 @@ export type Position = {
   time_stop_at?: string;
 };
 
+/** A genome's belief about the true probability of the YES outcome (sim-poly
+ *  only). When attached to an entry signal, the EV+Kelly risk wrapper engages
+ *  automatically — gating on EV >= minEv and resizing via Quarter Kelly.
+ *  Genomes without a probability model (rule-based momentum, mean-reversion,
+ *  etc.) leave this undefined and the rail is a no-op pass-through. */
+export type PTrueEstimate = {
+  pTrue: number;                          // 0..1, P(YES)
+  confidence?: "high" | "medium" | "low";
+  source?: string;                        // "llm-oracle" | "wallet-copy" | "bayesian-update" | …
+};
+
 export type Signal =
-  | { kind: "entry"; venue: Venue; market_id: string; side: "BUY" | "SELL"; size_usd: number; rationale: string; target_price?: number; stop_price?: number; time_stop_at?: string }
+  | { kind: "entry"; venue: Venue; market_id: string; side: "BUY" | "SELL"; size_usd: number; rationale: string; target_price?: number; stop_price?: number; time_stop_at?: string; pTrueEstimate?: PTrueEstimate }
   | { kind: "exit"; venue: Venue; market_id: string; rationale: string }
   | { kind: "hold" };
 
