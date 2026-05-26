@@ -76,6 +76,27 @@ const RandomWalkBaseline = z.object({
   entry_size_usd: num(5, 50),
 }).strict();
 
+const WalletCopyFiltered = z.object({
+  // Mirror a tracked wallet's trades, filtered by category dominance. Lunar
+  // article's Mental Bug #4: "A wallet has 91% WR on crypto and 15% on
+  // politics. Copying everything = net negative. Filter by category."
+  // PRD lunar-inspired §6.3.R3.
+  wallet_address: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+  copy_category: z.enum(["geopolitics", "elections", "crypto", "sports", "macro", "weather", "tech", "other"]),
+  /** Fraction of source's trade size to mirror (e.g. 0.01 = 1% of source size). */
+  size_pct_of_source: pct(0.001, 0.10),
+  /** Hard cap on our position size in USD regardless of source's size. */
+  max_size_usd: num(1, 100),
+  /** Only copy fills younger than this many minutes — older fills are stale. */
+  delay_min: num(1, 60),
+  /** Minimum source win-rate in copy_category over the last 30 days to allow
+   *  copying. Below this, the genome holds with rationale "underperforming". */
+  min_source_win_rate: pct(0.40, 0.90),
+  /** Minimum trades the source needs in this category for win-rate to be
+   *  trustworthy. Below this, genome holds (overfitting guardrail). */
+  min_source_trades: num(5, 200),
+}).strict();
+
 const CategorySpecialist = z.object({
   // Polymarket archetype inspired by majorexploiter ($2.4M in March 2026,
   // geopolitics+elections only — laser-focused single-category trader).
@@ -116,6 +137,7 @@ export const GenomeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("cb_momentum_burst"),    params: CbMomentumBurst }),
   z.object({ kind: z.literal("random_walk_baseline"), params: RandomWalkBaseline }),
   z.object({ kind: z.literal("category_specialist"),  params: CategorySpecialist }),
+  z.object({ kind: z.literal("wallet_copy_filtered"), params: WalletCopyFiltered }),
 ]);
 
 export type Genome = z.infer<typeof GenomeSchema>;
@@ -130,6 +152,7 @@ export const GENOME_KINDS: GenomeKind[] = [
   "cb_momentum_burst",
   "random_walk_baseline",
   "category_specialist",
+  "wallet_copy_filtered",
 ];
 
 const PARAM_BOUNDS: Record<GenomeKind, Record<string, [number, number] | string[]>> = {
@@ -182,6 +205,14 @@ const PARAM_BOUNDS: Record<GenomeKind, Record<string, [number, number] | string[
     entry_size_usd: [5, 100], exit_target_pts: [1, 8], stop_pts: [2, 10],
     time_stop_h: [12, 168], breakout_mult: [1.05, 2.5],
   },
+  wallet_copy_filtered: {
+    // wallet_address is a string opaque to bounds — randomGenome picks from a
+    // pool passed via opts.walletPool when seeding/mutating.
+    copy_category: ["geopolitics", "elections", "crypto", "sports", "macro", "weather", "tech", "other"],
+    size_pct_of_source: [0.001, 0.10], max_size_usd: [1, 100],
+    delay_min: [1, 60], min_source_win_rate: [0.40, 0.90],
+    min_source_trades: [5, 200],
+  },
 };
 
 export function getParamBounds(kind: GenomeKind): Record<string, [number, number] | string[]> {
@@ -199,7 +230,11 @@ export function clamp(x: number, lo: number, hi: number): number {
  * one of the registered pairings in `cross_venue_arbs`). Used by `arena:init`
  * to seed the initial population.
  */
-export function randomGenome(rng: () => number, kind?: GenomeKind, opts: { polyConditionIdPool?: string[] } = {}): Genome {
+export function randomGenome(
+  rng: () => number,
+  kind?: GenomeKind,
+  opts: { polyConditionIdPool?: string[]; walletPool?: string[] } = {},
+): Genome {
   const chosen = kind ?? GENOME_KINDS[Math.floor(rng() * GENOME_KINDS.length)];
   const bounds = PARAM_BOUNDS[chosen];
   const params: Record<string, unknown> = {};
@@ -217,6 +252,14 @@ export function randomGenome(rng: () => number, kind?: GenomeKind, opts: { polyC
   if (chosen === "cross_venue_arb") {
     const pool = opts.polyConditionIdPool ?? [];
     params.poly_condition_id = pool[Math.floor(rng() * Math.max(1, pool.length))] ?? "seed-btc-over-150k-eoy-2026";
+  }
+  if (chosen === "wallet_copy_filtered") {
+    const pool = opts.walletPool ?? [];
+    // Fallback to HorizonSplendidView's address (the article's high-freq
+    // archetype) — so random-genome generation still produces a valid genome
+    // even when the wallet pool isn't passed (e.g. in unit tests).
+    params.wallet_address = pool[Math.floor(rng() * Math.max(1, pool.length))]
+      ?? "0x02227b8f5a9636e895607edd3185ed6ee5598ff7";
   }
   // Round integers where the strategy semantically expects integers (lookbacks, time stops).
   const intKeys = new Set([
@@ -249,5 +292,6 @@ export function genomeNickname(g: Genome): string {
     case "cb_momentum_burst": return `mom-${(g.params.product_id ?? "BTC-USD").toLowerCase().replace("-usd", "")}`;
     case "random_walk_baseline": return "rand";
     case "category_specialist": return `cat-${g.params.category}-${g.params.inner_strategy === "breakout" ? "bo" : "fs"}`;
+    case "wallet_copy_filtered": return `copy-${g.params.wallet_address.slice(2, 8)}-${g.params.copy_category}`;
   }
 }

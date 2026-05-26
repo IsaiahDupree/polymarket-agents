@@ -8,6 +8,7 @@
  * grows. Keep this file in sync when adding new genome kinds.
  */
 import { acceleration, loadRecentCandles, velocity } from "./momentum";
+import { recentFillsForWalletInCategory, walletWinRateByCategory } from "@/lib/wallet/category-stats";
 import type { LiveAgent, Snapshot, TickContext } from "./types";
 
 export type DiagStatus = "in-position" | "would-enter" | "watching" | "no-data";
@@ -159,6 +160,28 @@ export function diagnoseAgent(agent: LiveAgent, ctx: TickContext): AgentDiagnost
       return {
         status: "watching",
         label: `trade_prob=${(p.trade_prob * 100).toFixed(1)}% per tick`,
+      };
+    }
+    case "wallet_copy_filtered": {
+      const p = g.params;
+      const stats = walletWinRateByCategory(p.wallet_address, p.copy_category, 30);
+      if (!stats) {
+        return { status: "no-data", label: `no fills · ${p.wallet_address.slice(0, 8)}…/${p.copy_category}` };
+      }
+      if (stats.trades_count < p.min_source_trades) {
+        return { status: "no-data", label: `only ${stats.trades_count}/${p.min_source_trades} src trades` };
+      }
+      if (stats.win_rate < p.min_source_win_rate) {
+        return { status: "watching", label: `wr=${(stats.win_rate * 100).toFixed(0)}% < ${(p.min_source_win_rate * 100).toFixed(0)}% gate` };
+      }
+      const fills = recentFillsForWalletInCategory(p.wallet_address, p.copy_category, p.delay_min);
+      if (fills.length === 0) {
+        return { status: "watching", label: `wr=${(stats.win_rate * 100).toFixed(0)}% · no fills in last ${p.delay_min}min` };
+      }
+      return {
+        status: "would-enter",
+        label: `wr=${(stats.win_rate * 100).toFixed(0)}% · ${fills.length} fresh fills`,
+        detail: `latest: ${fills[0].side} ${fills[0].token_id.slice(0, 8)}… @ ${fills[0].price?.toFixed(3)}`,
       };
     }
     case "category_specialist": {

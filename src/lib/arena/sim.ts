@@ -15,6 +15,7 @@
  */
 import type { Genome } from "./genome";
 import { acceleration, loadRecentCandles, velocity } from "./momentum";
+import { recentFillsForWalletInCategory, walletWinRateByCategory } from "@/lib/wallet/category-stats";
 import type {
   LiveAgent, PaperTradeRow, Position, Signal, Snapshot, SnapshotWindow, TickContext, Venue,
 } from "./types";
@@ -229,6 +230,38 @@ function decideCbMomentumBurst(g: Extract<Genome, { kind: "cb_momentum_burst" }>
   return holdSignal();
 }
 
+function decideWalletCopyFiltered(g: Extract<Genome, { kind: "wallet_copy_filtered" }>, agent: LiveAgent, ctx: TickContext): Signal {
+  // Mental Bug #4 guard: refuse to copy if the source's win-rate in the chosen
+  // category is below threshold OR if the source has too few trades in that
+  // category to make win-rate trustworthy (overfitting).
+  const stats = walletWinRateByCategory(g.params.wallet_address, g.params.copy_category, 30);
+  if (!stats) return holdSignal();
+  if (stats.trades_count < g.params.min_source_trades) return holdSignal();
+  if (stats.win_rate < g.params.min_source_win_rate) return holdSignal();
+
+  // Find recent fills the source made in this category within the delay
+  // window. Copy the most recent one we don't already hold.
+  const fills = recentFillsForWalletInCategory(g.params.wallet_address, g.params.copy_category, g.params.delay_min);
+  for (const fill of fills) {
+    if (agent.positions.some((p) => p.market_id === fill.token_id)) continue;
+    // Skip if no current snapshot for the market (we'd execute at a stale price).
+    const win = ctx.snapshots.get(fill.token_id);
+    if (!win) continue;
+    const sourceSize = fill.size_usd ?? 0;
+    if (sourceSize <= 0) continue;
+    const desired = sourceSize * g.params.size_pct_of_source;
+    const size = Math.min(desired, g.params.max_size_usd, agent.cash_usd_current);
+    if (size <= 0) continue;
+    return {
+      kind: "entry", venue: "sim-poly", market_id: fill.token_id, side: fill.side,
+      size_usd: size,
+      rationale: `copy ${g.params.wallet_address.slice(0, 8)}… in ${g.params.copy_category} (wr=${(stats.win_rate * 100).toFixed(0)}% over ${stats.trades_count} trades)`,
+      time_stop_at: new Date(new Date(ctx.now).getTime() + 24 * 3_600_000).toISOString(),
+    };
+  }
+  return holdSignal();
+}
+
 function decideCategorySpecialist(g: Extract<Genome, { kind: "category_specialist" }>, agent: LiveAgent, ctx: TickContext): Signal {
   // Filter poly markets to the chosen category. Inner strategy is either
   // fade-spike (against extended moves) or breakout (with strong moves). The
@@ -326,6 +359,7 @@ export function decide(agent: LiveAgent, ctx: TickContext, rng: () => number): S
     case "cb_momentum_burst":   return decideCbMomentumBurst(g, agent, ctx);
     case "random_walk_baseline": return decideRandomWalk(g, agent, ctx, rng);
     case "category_specialist":  return decideCategorySpecialist(g, agent, ctx);
+    case "wallet_copy_filtered": return decideWalletCopyFiltered(g, agent, ctx);
   }
 }
 
