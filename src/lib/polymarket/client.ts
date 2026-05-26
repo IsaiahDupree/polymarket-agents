@@ -3,7 +3,7 @@
  * and background workers. The harness in `scripts/test-endpoints.ts` is the
  * source of truth for which routes / params / responses we trust.
  */
-import { hmacSign } from "./sign.ts";
+import { hmacSign } from "./sign";
 
 type Env = {
   GAMMA: string;
@@ -33,8 +33,17 @@ function readEnv(): Env {
   };
 }
 
+/** Per-request timeout. Polymarket Gamma + CLOB normally answer in <1s; 10s
+ *  is generous. Override via POLYMARKET_FETCH_TIMEOUT_MS. Audit fix F2. */
+function fetchTimeoutMs(): number {
+  return Number(process.env.POLYMARKET_FETCH_TIMEOUT_MS ?? "10000");
+}
+
 async function get<T>(url: string, headers: HeadersInit = {}): Promise<T> {
-  const r = await fetch(url, { method: "GET", headers, cache: "no-store" });
+  const r = await fetch(url, {
+    method: "GET", headers, cache: "no-store",
+    signal: AbortSignal.timeout(fetchTimeoutMs()),
+  });
   if (!r.ok) throw new Error(`GET ${url} → ${r.status} ${await r.text().then((t) => t.slice(0, 200))}`);
   return r.json() as Promise<T>;
 }
@@ -51,8 +60,12 @@ export const poly = {
     return get<any[]>(`${e.GAMMA}/events?${qs}`);
   },
   event: (id: number | string) => get<any>(`${readEnv().GAMMA}/events/${id}`),
-  marketsByCondition: (conditionIds: string[]) =>
-    get<any[]>(`${readEnv().GAMMA}/markets?condition_ids=${conditionIds.join(",")}`),
+  marketsByCondition: (conditionIds: string[], opts: { closed?: boolean; archived?: boolean } = {}) => {
+    const qs = new URLSearchParams({ condition_ids: conditionIds.join(",") });
+    if (opts.closed !== undefined) qs.set("closed", String(opts.closed));
+    if (opts.archived !== undefined) qs.set("archived", String(opts.archived));
+    return get<any[]>(`${readEnv().GAMMA}/markets?${qs}`);
+  },
   tags: (limit = 20) => get<any[]>(`${readEnv().GAMMA}/tags?limit=${limit}`),
   search: (q: string, limitPerType = 5) =>
     get<any>(`${readEnv().GAMMA}/public-search?q=${encodeURIComponent(q)}&limit_per_type=${limitPerType}`),

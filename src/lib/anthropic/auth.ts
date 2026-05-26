@@ -79,6 +79,9 @@ async function refreshOAuthToken(refreshToken: string): Promise<OAuthBundle | nu
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: body.toString(),
+      // 10s timeout per audit F2 — refresh should be fast; if Anthropic auth
+      // hangs, fail fast and let the next tick retry.
+      signal: AbortSignal.timeout(10_000),
     });
     const data = (await res.json()) as {
       access_token?: string;
