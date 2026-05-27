@@ -640,3 +640,38 @@ CREATE TABLE IF NOT EXISTS retroactive_consensus_buckets (
   created_at          TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_retro_buckets_run ON retroactive_consensus_buckets(run_id);
+
+-- Gated decision system audit log (PRD: docs/prd/gated-decision-system-2026-05-27.md).
+-- One row per proposed trade — whether approved, reduced, watchlist-only,
+-- rejected, or killswitched. Lets the operator answer "why didn't we trade X?"
+-- from the /decisions UI and feeds post-trade learning.
+--
+-- gate_results_json schema (array of GateResult, matching src/lib/decision/types.ts):
+--   [{ gate, status, score, action, reason, details? }, ...]
+CREATE TABLE IF NOT EXISTS decision_journal (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts                  TEXT NOT NULL,                       -- ISO timestamp the decision was finalized
+  agent_id            INTEGER,                             -- paper_agents.id (nullable: pre-versioning trades)
+  capsule_id          TEXT,                                -- capsules.id
+  strategy_version_id INTEGER,                             -- strategy_versions.id (nullable)
+  strategy_kind       TEXT NOT NULL,                       -- genome kind ("poly_short_binary_directional", etc.)
+  venue               TEXT NOT NULL,
+  symbol              TEXT NOT NULL,                       -- market identifier within venue
+  side                TEXT NOT NULL,                       -- BUY | SELL
+  condition_id        TEXT,                                -- polymarket conditionId / coinbase product
+  proposed_size_usd   REAL NOT NULL,                       -- size before approval multiplier
+  approved_size_usd   REAL NOT NULL,                       -- = proposed × size_multiplier (0 if rejected)
+  proposed_price      REAL NOT NULL,
+  decision            TEXT NOT NULL,                       -- APPROVED_FULL | APPROVED_REDUCED | WATCHLIST | REJECTED | KILL_SWITCH
+  approval_score      REAL NOT NULL,                       -- 0..1 weighted aggregate
+  size_multiplier     REAL NOT NULL,                       -- 0..1
+  proposal_json       TEXT NOT NULL,                       -- full DecisionContext.proposal serialized
+  snapshot_json       TEXT,                                -- optional DecisionContext.snapshot serialized
+  gate_results_json   TEXT NOT NULL,                       -- array of GateResult
+  order_id            TEXT,                                -- populated post-submit (NULL if not submitted)
+  created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_decision_journal_ts ON decision_journal(ts);
+CREATE INDEX IF NOT EXISTS idx_decision_journal_capsule ON decision_journal(capsule_id, ts);
+CREATE INDEX IF NOT EXISTS idx_decision_journal_decision ON decision_journal(decision, ts);
+CREATE INDEX IF NOT EXISTS idx_decision_journal_strategy_kind ON decision_journal(strategy_kind, ts);
