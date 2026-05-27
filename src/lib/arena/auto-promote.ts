@@ -39,6 +39,7 @@ import { insertEvolutionEvent } from "@/lib/db/queries";
 import { listAliveElites } from "./db";
 import { rankAgents } from "./score";
 import { createCapsule, getCapsule, setStatus } from "@/lib/capsules/store";
+import { readRiskBudgetFromEnv } from "./risk-budget";
 import type { PaperAgentRow } from "./types";
 
 const DEFAULT_TOP_N = 3;
@@ -61,18 +62,19 @@ export function runAutoPromote(opts: { topN?: number; minTrades?: number } = {})
   if (process.env.ALLOW_AUTO_PROMOTE !== "1") {
     return emptyResult({ skipped: "ALLOW_AUTO_PROMOTE != 1" });
   }
-  const totalBudget = Number(process.env.ARENA_LIVE_CAPITAL_TOTAL_USD ?? "0");
-  if (!Number.isFinite(totalBudget) || totalBudget <= 0) {
-    return emptyResult({ skipped: "ARENA_LIVE_CAPITAL_TOTAL_USD not set or <= 0" });
+  // Risk budget — single derivation point. See src/lib/arena/risk-budget.ts.
+  // Capital, daily-loss cap, total-DD cap, and the per-capsule trade-count cap
+  // all derive from (stake_usd, n_agents, daily_stakes, lifetime_stakes).
+  // Equation chain: capital = stake × lifetime_stakes; daily-loss = stake ×
+  // daily_stakes; lifetime-DD = capital. No more independent USD knobs.
+  const budget = readRiskBudgetFromEnv();
+  const totalBudget = budget.global.total_live_capital_usd;
+  if (totalBudget <= 0) {
+    return emptyResult({ skipped: "Risk budget total_live_capital_usd <= 0 (RISK_STAKE_USD × RISK_N_AGENTS × RISK_LIFETIME_STAKES_AT_RISK)" });
   }
 
-  const topN = opts.topN ?? Number(process.env.ARENA_AUTO_PROMOTE_TOP_N ?? DEFAULT_TOP_N);
+  const topN = opts.topN ?? budget.inputs.nAgents;
   const minTrades = opts.minTrades ?? Number(process.env.ARENA_AUTO_PROMOTE_MIN_TRADES ?? DEFAULT_MIN_TRADES);
-  // Risk profile for newly-created auto-live capsules. Defaults: 30% daily-
-  // loss cap, 60% total-drawdown cap (tighter than the original 40%/50%).
-  // Override via env so the operator can tune without a code change.
-  const dailyLossPct = Number(process.env.ARENA_AUTO_PROMOTE_DAILY_LOSS_PCT ?? "0.30");
-  const totalDdPct = Number(process.env.ARENA_AUTO_PROMOTE_TOTAL_DD_PCT ?? "0.60");
 
   // 1. Find current elites and filter to proof-of-life qualifying set.
   const elites = listAliveElites();
@@ -178,7 +180,7 @@ export function runAutoPromote(opts: { topN?: number; minTrades?: number } = {})
                   max_total_drawdown_usd = ?,
                   updated_at = datetime('now')
             WHERE id = ?`,
-        ).run(perCapsule, perCapsule, perCapsule * dailyLossPct, perCapsule * totalDdPct, existing.id);
+        ).run(perCapsule, perCapsule, budget.perCapsule.daily_loss_cap_usd, budget.perCapsule.total_dd_cap_usd, existing.id);
         if (needsReactivate) setStatus(existing.id, "live");
         insertEvolutionEvent({
           event_type: "capsule-auto-rebalanced",
@@ -195,10 +197,10 @@ export function runAutoPromote(opts: { topN?: number; minTrades?: number } = {})
       name: `auto-live-${agent.name}`,
       capitalUsd: perCapsule,
       allowedVenues: ["polymarket"],
-      maxDailyLossUsd: perCapsule * dailyLossPct,
-      maxTotalDrawdownUsd: perCapsule * totalDdPct,
+      maxDailyLossUsd: budget.perCapsule.daily_loss_cap_usd,
+      maxTotalDrawdownUsd: budget.perCapsule.total_dd_cap_usd,
       maxOpenPositions: 3,
-      maxTradesPerDay: 20,
+      maxTradesPerDay: budget.perCapsule.max_trades_per_day,
     });
     db().prepare(`UPDATE capsules SET paper_agent_id = ? WHERE id = ?`).run(agent.id, capsule.id);
     setStatus(capsule.id, "live");
