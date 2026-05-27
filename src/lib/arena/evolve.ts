@@ -25,6 +25,7 @@ import { computeReplayFitness } from "./replay-fitness";
 import { aggressivePresets } from "./seed-presets";
 import { applySignal, markToMarket } from "./sim";
 import { runAutoPromote } from "./auto-promote";
+import { runMetaEvolution, shouldRunMetaEvolution } from "./meta-evolution";
 import { runCircuitBreaker } from "@/lib/capsules/circuit-breaker";
 import { getBinaryMeta } from "./short-binaries";
 import type { LiveAgent, PaperAgentRow, TickContext } from "./types";
@@ -177,6 +178,10 @@ export type EvolveResult = {
     inspected: number;
     paused: number;
   };
+  /** Meta-evolution: when this seal triggers a meta-evolve pass
+   *  (every ARENA_META_EVOLVE_EVERY gens), summarize how many variants
+   *  Claude proposed and how many passed zod validation. */
+  meta_evolve: { proposed: number; accepted: number } | null;
 } | { skipped: "no_open_generation" } | { skipped: "no_alive_agents"; sealed_gen: number };
 
 export async function runEvolveOnce(opts: { survivalPct?: number; championshipGens?: number; eliteCount?: number; eliteMaxDdPct?: number } = {}): Promise<EvolveResult> {
@@ -445,6 +450,25 @@ export async function runEvolveOnce(opts: { survivalPct?: number; championshipGe
   // just-promoted top-N.
   const autoPromote = runAutoPromote();
 
+  // Meta-evolution: every ARENA_META_EVOLVE_EVERY gens (default 5), ask
+  // Claude to synthesize new genome variants by reading the existing
+  // population's genomes + perf. Seeded as `introduced_by=meta-llm` so we
+  // can later compare lineages. Non-blocking — any failure (no auth, LLM
+  // unavailable, JSON parse error) just logs and continues with the
+  // already-seeded preset + mutation genomes. (Feature added 2026-05-27.)
+  let metaEvolveResult: { proposed: number; accepted: number } | null = null;
+  if (shouldRunMetaEvolution(gen.gen_number)) {
+    try {
+      const meta = await runMetaEvolution({ nextGen, startingCash });
+      if (meta.attempted) {
+        metaEvolveResult = { proposed: meta.proposed_count, accepted: meta.accepted_count };
+        for (const id of meta.seeded_agent_ids) newIds.push(id);
+      }
+    } catch (e) {
+      console.warn(`[meta-evolve] failed: ${(e as Error).message?.slice(0, 100)}`);
+    }
+  }
+
   return {
     sealed_gen: gen.gen_number,
     next_gen: nextGen,
@@ -464,5 +488,6 @@ export async function runEvolveOnce(opts: { survivalPct?: number; championshipGe
       inspected: breaker.inspected,
       paused: breaker.paused.length,
     },
+    meta_evolve: metaEvolveResult,
   };
 }

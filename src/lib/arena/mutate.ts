@@ -147,9 +147,12 @@ export async function mutateLlm(
       parent_perf: perfNotes,
       poly_condition_id_pool: opts.polyConditionIdPool ?? [],
     });
+    // claude-haiku-4-5-20251001 is the only model accessible via Claude Max
+    // OAuth (sonnet/opus return 429). max_tokens bumped to 800 to fit haiku's
+    // slightly more verbose JSON output.
     const resp = await client.messages.create({
-      model: "claude-opus-4-7",
-      max_tokens: 600,
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 800,
       system,
       messages: [{ role: "user", content: user }],
     });
