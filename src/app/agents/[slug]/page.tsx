@@ -1,14 +1,26 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { currentVersion, getAgentBySlug, listStrategiesForAgent, listVersions } from "@/lib/db/queries";
+import { buildAgentContext } from "@/lib/agents/context";
 
 export const dynamic = "force-dynamic";
+
+function fmtUsd(n: number | null | undefined): string {
+  return `$${Number(n ?? 0).toFixed(2)}`;
+}
+function fmtPct(n: number | null | undefined, digits = 1): string {
+  return `${(Number(n ?? 0) * 100).toFixed(digits)}%`;
+}
 
 export default async function AgentDetail({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   const agent = getAgentBySlug(slug);
   if (!agent) notFound();
   const strategies = listStrategiesForAgent(agent.id);
+
+  // One AgentContext per strategy — surface the same snapshot the
+  // research-loop evaluators see when they make decisions.
+  const contexts = strategies.map((s) => ({ strategy: s, ctx: buildAgentContext(s.id) }));
 
   return (
     <div className="space-y-6">
@@ -26,11 +38,12 @@ export default async function AgentDetail({ params }: { params: Promise<{ slug: 
       <section>
         <h2 className="card-title">Strategies</h2>
         <div className="space-y-4">
-          {strategies.map((s) => {
+          {contexts.map(({ strategy: s, ctx }) => {
             const cur = currentVersion(s.id);
             const allVersions = listVersions(s.id);
             const filter = JSON.parse(s.market_filter);
             const spec = cur ? JSON.parse(cur.spec_json) : null;
+            const topRejects = Object.entries(ctx.recentRejectCounts).sort((a, b) => b[1] - a[1]).slice(0, 3);
             return (
               <div key={s.id} className="card">
                 <div className="flex items-baseline justify-between mb-1">
@@ -38,6 +51,79 @@ export default async function AgentDetail({ params }: { params: Promise<{ slug: 
                   <span className="text-xs text-zinc-500">v{cur?.version ?? "?"} of {allVersions.length}</span>
                 </div>
                 <p className="text-sm text-zinc-300">{s.thesis}</p>
+
+                {/* Live context — same snapshot the evaluator sees */}
+                <div className="mt-3 rounded border border-ink-700 bg-ink-950 p-3 text-xs">
+                  <div className="flex items-baseline justify-between mb-2">
+                    <span className="card-title">Live context</span>
+                    <span className="text-zinc-600">built {ctx.builtAt.slice(11, 19)}Z</span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-3">
+                    <div>
+                      <div className="text-zinc-500">Halt</div>
+                      <div className={ctx.killSwitch.halted ? "text-accent-red" : "text-accent-green"}>{ctx.killSwitch.halted ? `HALTED: ${ctx.killSwitch.reason || "(no reason)"}` : "clear"}</div>
+                    </div>
+                    <div>
+                      <div className="text-zinc-500">Capsules</div>
+                      <div className="tabular-nums">{ctx.activeCapsules.length} active / {ctx.capsules.length} total</div>
+                    </div>
+                    <div>
+                      <div className="text-zinc-500">Last backtest</div>
+                      <div className="tabular-nums">{ctx.lastBacktest?.score != null ? `score ${ctx.lastBacktest.score.toFixed(1)}` : "(none)"}</div>
+                      {ctx.lastBacktest?.pnlUsd != null && (
+                        <div className="text-zinc-600">{fmtUsd(ctx.lastBacktest.pnlUsd)} pnl / {fmtPct((ctx.lastBacktest.maxDrawdownUsd ?? 0) / 1000, 1)} dd</div>
+                      )}
+                    </div>
+                    <div>
+                      <div className="text-zinc-500">Top recent rejects</div>
+                      {topRejects.length === 0 ? (
+                        <div className="text-zinc-600">(none)</div>
+                      ) : (
+                        topRejects.map(([code, count]) => (
+                          <div key={code} className="text-zinc-300 tabular-nums">{code} <span className="text-zinc-600">×{count}</span></div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  {ctx.activeCapsules.length > 0 && (
+                    <div className="mt-3 border-t border-ink-800 pt-2">
+                      <div className="text-zinc-500 mb-1">Bound capsules</div>
+                      <table className="list w-full">
+                        <thead><tr><th>id</th><th>status</th><th className="text-right">allocated</th><th className="text-right">deployed</th><th className="text-right">daily pnl</th><th className="text-right">trades today</th><th className="text-right">open pos</th></tr></thead>
+                        <tbody>
+                          {ctx.activeCapsules.map((c) => (
+                            <tr key={c.id}>
+                              <td className="font-mono text-[10px]">{c.id.slice(0, 8)}…</td>
+                              <td>{c.status}</td>
+                              <td className="text-right tabular-nums">{fmtUsd(c.capital_allocated_usd)}</td>
+                              <td className="text-right tabular-nums">{fmtUsd(c.capital_deployed_usd)}</td>
+                              <td className={`text-right tabular-nums ${c.daily_pnl_usd < 0 ? "text-accent-red" : c.daily_pnl_usd > 0 ? "text-accent-green" : ""}`}>{fmtUsd(c.daily_pnl_usd)}</td>
+                              <td className="text-right tabular-nums">{c.trades_today}{c.max_trades_per_day > 0 ? ` / ${c.max_trades_per_day}` : ""}</td>
+                              <td className="text-right tabular-nums">{c.open_positions}{c.max_open_positions > 0 ? ` / ${c.max_open_positions}` : ""}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {ctx.recentEvolution.length > 0 && (
+                    <div className="mt-3 border-t border-ink-800 pt-2">
+                      <div className="text-zinc-500 mb-1">Recent evolution (last {Math.min(5, ctx.recentEvolution.length)})</div>
+                      <ul className="space-y-0.5">
+                        {ctx.recentEvolution.slice(0, 5).map((e) => (
+                          <li key={e.id} className="font-mono text-[11px] text-zinc-400">
+                            <span className="text-zinc-600">{e.created_at.slice(11, 19)}</span>{" "}
+                            <span className="text-accent-blue">{e.event_type}</span>{" "}
+                            <span className="text-zinc-300">{e.summary}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+
                 <div className="mt-3 grid grid-cols-2 gap-4 text-xs">
                   <div>
                     <div className="card-title mb-1">Market filter</div>

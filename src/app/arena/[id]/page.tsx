@@ -1,11 +1,13 @@
 import Link from "next/link";
 import { Sparkline } from "@/components/Sparkline";
 import { AutoRefresh } from "@/components/AutoRefresh";
+import { PromoteToLiveButton } from "@/components/PromoteToLiveButton";
 import { equityCurveForAgent, getPaperAgent, listTradesForAgent, toLiveAgent } from "@/lib/arena/db";
 import { scoreAgent, liveEquity } from "@/lib/arena/score";
 import { loadRecentCandles, velocity, acceleration } from "@/lib/arena/momentum";
 import { buildLiveTickContext } from "@/lib/arena/context";
 import { decide } from "@/lib/arena/sim";
+import { db } from "@/lib/db/client";
 import type { Genome } from "@/lib/arena/genome";
 
 export const dynamic = "force-dynamic";
@@ -80,17 +82,35 @@ export default async function ArenaAgentDetail({ params }: { params: Promise<{ i
     liveDecision = null;
   }
 
+  // Live-capsule binding check for the "Promote to live" button — disable if
+  // the agent already owns a paper/live capsule.
+  const liveCapsule = db().prepare(
+    `SELECT id, status FROM capsules WHERE paper_agent_id = ? AND status IN ('paper','live') LIMIT 1`,
+  ).get(agentId) as { id: string; status: string } | undefined;
+
   return (
     <div className="space-y-6">
       <AutoRefresh label={`agent-${row.id}`} intervalMs={15_000} />
       <div>
         <Link href="/arena" className="text-xs text-zinc-500 hover:text-zinc-300">← arena</Link>
-        <h1 className="text-2xl font-semibold mt-1">{row.name}</h1>
+        <div className="mt-1 flex items-center gap-2">
+          <h1 className="text-2xl font-semibold">{row.name}</h1>
+          {row.is_elite ? <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent-amber/20 text-accent-amber border border-accent-amber/40">ELITE</span> : null}
+          {liveCapsule ? <span className="text-[10px] px-1.5 py-0.5 rounded bg-accent-green/20 text-accent-green border border-accent-green/40">{liveCapsule.status.toUpperCase()} CAPSULE</span> : null}
+        </div>
         <p className="text-xs text-zinc-500">
           gen {row.generation} · {row.alive ? "alive" : `retired (${row.retire_reason ?? "unknown"})`} ·
           parent {row.parent_paper_agent_id ?? "—"} · introduced by {row.introduced_by} ·
           <Link href={`/arena/lineage/${row.id}`} className="ml-1 hover:text-accent-blue">view lineage →</Link>
         </p>
+        {row.alive && row.entries_count > 0 && (
+          <PromoteToLiveButton
+            agentId={agentId}
+            agentName={row.name}
+            isElite={!!row.is_elite}
+            hasLiveCapsule={!!liveCapsule}
+          />
+        )}
       </div>
 
       {/* Live decision context — what would this agent do right now? */}
@@ -151,11 +171,12 @@ export default async function ArenaAgentDetail({ params }: { params: Promise<{ i
         </div>
       </section>
 
-      <section className="grid grid-cols-4 gap-4">
+      <section className="grid grid-cols-5 gap-4">
         <Stat label="Equity" value={`$${liveEquity(row).toFixed(2)}`} hint={`cash $${row.cash_usd_current.toFixed(2)} + locked $${(liveEquity(row) - row.cash_usd_current - row.unrealized_pnl_usd).toFixed(2)} + unr $${row.unrealized_pnl_usd.toFixed(2)}`} />
         <Stat label="Realized PnL" value={`$${row.realized_pnl_usd.toFixed(2)}`} className={row.realized_pnl_usd >= 0 ? "text-accent-green" : "text-accent-red"} />
         <Stat label="Fitness" value={score.fitness.toFixed(4)} hint={`${(score.pnl_pct * 100).toFixed(2)}% − 2 × ${(score.max_dd_pct * 100).toFixed(2)}%`} className={score.fitness >= 0 ? "text-accent-green" : "text-accent-red"} />
-        <Stat label="Trades / Wins" value={`${row.trades_count} / ${row.wins_count}`} hint={`win rate ${(score.win_rate * 100).toFixed(0)}%`} />
+        <Stat label="Entries" value={String(row.entries_count)} hint="positions opened (incl. still-open)" />
+        <Stat label="Round-trips / Wins" value={`${row.trades_count} / ${row.wins_count}`} hint={`win rate ${(score.win_rate * 100).toFixed(0)}% · only closed positions`} />
       </section>
 
       <section className="card">

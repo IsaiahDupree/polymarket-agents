@@ -51,12 +51,27 @@ async function get<T>(url: string, headers: HeadersInit = {}): Promise<T> {
 export const poly = {
   env: readEnv,
   // --- Gamma (public) ---
-  events: (opts: { limit?: number; closed?: boolean; tag_slug?: string } = {}) => {
+  events: (opts: {
+    limit?: number;
+    closed?: boolean;
+    tag_slug?: string;
+    /** ISO timestamp — Gamma returns events with endDate >= this. */
+    end_date_min?: string;
+    /** ISO timestamp — Gamma returns events with endDate <= this. */
+    end_date_max?: string;
+    /** Field to order by, e.g. 'endDate' or 'startDate'. */
+    order?: string;
+    ascending?: boolean;
+  } = {}) => {
     const e = readEnv();
     const qs = new URLSearchParams();
     qs.set("limit", String(opts.limit ?? 10));
     if (opts.closed !== undefined) qs.set("closed", String(opts.closed));
     if (opts.tag_slug) qs.set("tag_slug", opts.tag_slug);
+    if (opts.end_date_min) qs.set("end_date_min", opts.end_date_min);
+    if (opts.end_date_max) qs.set("end_date_max", opts.end_date_max);
+    if (opts.order) qs.set("order", opts.order);
+    if (opts.ascending !== undefined) qs.set("ascending", String(opts.ascending));
     return get<any[]>(`${e.GAMMA}/events?${qs}`);
   },
   event: (id: number | string) => get<any>(`${readEnv().GAMMA}/events/${id}`),
@@ -78,7 +93,16 @@ export const poly = {
     get<any[]>(`${readEnv().DATA}/trades?user=${user}&limit=${opts.limit ?? 50}`),
   userActivity: (user: string, opts: { limit?: number } = {}) =>
     get<any[]>(`${readEnv().DATA}/activity?user=${user}&limit=${opts.limit ?? 50}`),
-  userValue: (user: string) => get<any>(`${readEnv().DATA}/value?user=${user}`),
+  userValue: async (user: string): Promise<{ user: string; value: number } | null> => {
+    // The /value endpoint returns an array [{ user, value }] — unwrap to a
+    // single object (or null if the wallet has no recorded value). Most
+    // callers just want the number; surfacing the raw array repeatedly led
+    // to silent `value?.value` reads returning undefined.
+    const raw = await get<any>(`${readEnv().DATA}/value?user=${user}`);
+    if (Array.isArray(raw)) return raw[0] ?? null;
+    if (raw && typeof raw === "object" && "value" in raw) return raw as { user: string; value: number };
+    return null;
+  },
   openInterest: () => get<any>(`${readEnv().DATA}/oi`),
   topHolders: (conditionId: string, limit = 10) =>
     get<any[]>(`${readEnv().DATA}/holders?market=${conditionId}&limit=${limit}`),

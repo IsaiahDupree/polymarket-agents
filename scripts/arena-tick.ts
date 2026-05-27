@@ -9,7 +9,8 @@
  */
 import "./_env.ts";
 import {
-  listAliveAgentsForGen, getCurrentGeneration, persistAgentTick,
+  listAliveAgentsForGen, listAliveElites, listAliveAgentsWithLiveCapsule,
+  getCurrentGeneration, persistAgentTick,
   insertPaperTrade, toLiveAgent, incrementGenerationTickCount,
 } from "../src/lib/arena/db.ts";
 import { applySignal, decide, markToMarket } from "../src/lib/arena/sim.ts";
@@ -18,6 +19,7 @@ import { runEvolveOnce } from "../src/lib/arena/evolve.ts";
 import { findLiveCapsuleForPaperAgent, refreshCapsuleRealtime, routeArenaSignal, supportsLiveRouting } from "../src/lib/arena/live-capsule.ts";
 import { applyRiskRails } from "../src/lib/arena/risk-wrapper.ts";
 import { warmOracleCacheForTick } from "../src/lib/arena/oracle-warmer.ts";
+import { resolveExpiredBinaries } from "../src/lib/arena/binary-resolver.ts";
 
 const EVOLVE_EVERY = Number(process.env.ARENA_EVOLVE_EVERY ?? "50");
 
@@ -34,7 +36,31 @@ const EVOLVE_EVERY = Number(process.env.ARENA_EVOLVE_EVERY ?? "50");
     process.exit(1);
   }
 
-  const agents = listAliveAgentsForGen(gen.gen_number).map(toLiveAgent);
+  // Settle expired short binaries BEFORE the decide loop. The directional
+  // binary strategy sets `time_stop_at = expiry`; if we ran the resolver
+  // after, decide() would fire a generic time-stop exit at the last quoted
+  // midpoint (often 0.485 etc.) instead of the actual 0.0/1.0 outcome,
+  // distorting realized PnL. Running first means the position is gone by
+  // the time decide() walks the agent's open positions.
+  const settle = resolveExpiredBinaries();
+  const settleStr = settle.candidates > 0
+    ? `  settled=${settle.settled}/${settle.candidates} (closed ${settle.positions_closed} positions)`
+    : "";
+
+  // Tick the current generation + any elite preserved from older gens +
+  // any agent bound to a live capsule (so real-money capsules never get
+  // stranded when their owning agent drops out of the gen + loses elite).
+  // Dedupe by id since an agent can be in multiple of these sets at once.
+  const currentRows = listAliveAgentsForGen(gen.gen_number);
+  const eliteRows = listAliveElites();
+  const capsuleRows = listAliveAgentsWithLiveCapsule();
+  const seen = new Set<number>();
+  const allRows = [...currentRows, ...eliteRows, ...capsuleRows].filter((r) => {
+    if (seen.has(r.id)) return false;
+    seen.add(r.id);
+    return true;
+  });
+  const agents = allRows.map(toLiveAgent);
   const rng = Math.random;
   const stats = { decided: 0, entries: 0, exits: 0, holds: 0, live_fills: 0, live_rejects: 0, ev_kelly_engaged: 0, ev_kelly_blocked: 0, ev_kelly_resized: 0 };
 
@@ -74,6 +100,7 @@ const EVOLVE_EVERY = Number(process.env.ARENA_EVOLVE_EVERY ?? "50");
         const capsule = findLiveCapsuleForPaperAgent(agent.id);
         const liveRoutable = capsule && supportsLiveRouting(signal);
         let proceedToSim = true;
+        let liveRouteResult: { liveTokenId?: string; liveSizeUsd?: number; brokerOrderId?: string; clientOrderId?: string } | null = null;
         if (capsule && liveRoutable) {
           const refPrice = ctx.snapshots.get(signal.market_id)?.latest.price ?? 0;
           // For exits, look up the open position so the router can compute
@@ -83,7 +110,15 @@ const EVOLVE_EVERY = Number(process.env.ARENA_EVOLVE_EVERY ?? "50");
             : undefined;
           const route = await routeArenaSignal(signal, capsule, agent.id, refPrice, position);
           if (!route.ok) { proceedToSim = false; stats.live_rejects += 1; }
-          else if (route.status === "filled") { stats.live_fills += 1; }
+          else if (route.status === "filled") {
+            stats.live_fills += 1;
+            liveRouteResult = {
+              liveTokenId: route.liveTokenId,
+              liveSizeUsd: route.liveSizeUsd,
+              brokerOrderId: route.brokerOrderId,
+              clientOrderId: route.clientOrderId,
+            };
+          }
         }
         if (proceedToSim) {
           const res = applySignal(agent, signal, ctx, gen.gen_number);
@@ -91,6 +126,20 @@ const EVOLVE_EVERY = Number(process.env.ARENA_EVOLVE_EVERY ?? "50");
             insertPaperTrade(res.trade);
             if (res.trade.intent === "entry") stats.entries += 1;
             if (res.trade.intent === "exit")  stats.exits   += 1;
+          }
+          // Attach live-routing audit fields to the just-created position so
+          // the resolver/exit paths can settle against the actual filled
+          // token (= NO token after a SELL→BUY-NO swap on a poly directional).
+          if (liveRouteResult && signal.kind === "entry") {
+            const pos = agent.positions.find((p) => p.market_id === signal.market_id);
+            if (pos) {
+              pos.live_token_id = liveRouteResult.liveTokenId;
+              pos.live_paid_usd = liveRouteResult.liveSizeUsd;
+              pos.live_broker_order_id = liveRouteResult.brokerOrderId;
+              pos.live_client_order_id = liveRouteResult.clientOrderId;
+              // live_filled_shares stays undefined until the reconciler reads
+              // the actual fill from CLOB and writes the exact qty.
+            }
           }
         }
         if (capsule) refreshCapsuleRealtime(capsule.id, agent.id);
@@ -107,7 +156,9 @@ const EVOLVE_EVERY = Number(process.env.ARENA_EVOLVE_EVERY ?? "50");
   const railStr = stats.ev_kelly_engaged > 0 || stats.ev_kelly_blocked > 0
     ? ` rails=engaged${stats.ev_kelly_engaged}/blocked${stats.ev_kelly_blocked}/resized${stats.ev_kelly_resized}`
     : "";
-  console.log(`arena:tick gen=${gen.gen_number} agents=${agents.length} → entries=${stats.entries} exits=${stats.exits} holds=${stats.holds} live=${stats.live_fills}/${stats.live_rejects + stats.live_fills}${railStr}  tick=${tickCount}/${EVOLVE_EVERY}`);
+  const eliteSuffix = eliteRows.length > 0 ? ` elites=${eliteRows.length}` : "";
+  const capsuleSuffix = capsuleRows.length > 0 ? ` capsules=${capsuleRows.length}` : "";
+  console.log(`arena:tick gen=${gen.gen_number} agents=${agents.length}${eliteSuffix}${capsuleSuffix} → entries=${stats.entries} exits=${stats.exits} holds=${stats.holds} live=${stats.live_fills}/${stats.live_rejects + stats.live_fills}${railStr}${settleStr}  tick=${tickCount}/${EVOLVE_EVERY}`);
 
   // Auto-evolve trigger
   if (EVOLVE_EVERY > 0 && tickCount >= EVOLVE_EVERY) {

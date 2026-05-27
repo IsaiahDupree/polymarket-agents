@@ -43,9 +43,10 @@ describe("Gamma URL construction", () => {
     expect(calls[0].url).toMatch(/\/events\/12345$/);
   });
 
-  it("marketsByCondition joins comma-separated ids", async () => {
+  it("marketsByCondition joins comma-separated ids (URLSearchParams encoded)", async () => {
     await poly.marketsByCondition(["0xabc", "0xdef"]);
-    expect(calls[0].url).toContain("condition_ids=0xabc,0xdef");
+    // URLSearchParams encodes `,` as `%2C` — Polymarket accepts both forms.
+    expect(calls[0].url).toMatch(/condition_ids=0xabc(,|%2C)0xdef/);
   });
 
   it.each([5, 10, 20, 50])("tags limit=$limit", async (limit) => {

@@ -166,12 +166,17 @@ export function aggressivePresets(opts: { polyConditionIdPool?: string[] } = {})
     // AI estimates pTrue; the P2 EV+Kelly rail engages downstream. Inert
     // unless ARENA_LLM_ORACLE_ENABLED=1 (cost gate). One call per tick from
     // the warmer; this agent just reads the cache.
+    //
+    // Model = haiku-4-5: verified 2026-05-26 that the OAuth Claude Max scope
+    // only allows direct SDK calls to haiku (sonnet/opus return 429 even with
+    // headroom). Set ANTHROPIC_API_KEY (separately billed) if you want to
+    // route this through sonnet/opus.
     {
-      nick: "agg-oracle-sonnet",
+      nick: "agg-oracle-haiku",
       genome: {
         kind: "llm_probability_oracle",
         params: {
-          model: "claude-sonnet-4-6",
+          model: "claude-haiku-4-5-20251001",
           min_ev_pct: 0.05,
           max_calls_per_tick: 1,
           prompt_version: "v1",
@@ -199,6 +204,35 @@ export function aggressivePresets(opts: { polyConditionIdPool?: string[] } = {})
           stop_pts: 4,
           time_stop_h: 24,
           breakout_mult: 1.10,    // unused for fade_spike inner; keep within bounds
+        },
+      },
+    },
+    // Rolling 5-min Up/Down binary directional agent — reads BTC/ETH/SOL/XRP/DOGE
+    // velocity off Coinbase candles, buys YES on positive momentum, SELLs (= buy
+    // NO equivalent) on negative. Position is force-closed by the resolver at
+    // the actual outcome when the binary expires.
+    {
+      nick: "agg-5m-binary",
+      genome: {
+        kind: "poly_short_binary_directional",
+        params: {
+          assets: "BTC,ETH,SOL,XRP,DOGE,BNB,HYPE",   // full universe — Coinbase + OKX candle feeds
+          // Re-tuned 2026-05-26 (afternoon): backtest over 1890 resolved
+          // binaries (vs the 678 used for the morning tune). The bigger
+          // dataset flipped the recommendation:
+          //   vel_window=5, vel_entry=0.05% → 49.2% WR, +$1,138.85, +34.4% edge (n=663)
+          //   vel_window=3, vel_entry=0.10% → 43.4% WR, +$234.50,  +26.8% edge (n=175)  ← prior
+          // Wider window + looser threshold both increase trade volume AND
+          // edge per trade. The 5-min velocity smoothed by 5 candles is a
+          // better signal than 3 candles at a higher threshold.
+          vel_window_min: 5,
+          vel_entry_pct: 0.0005,            // 0.05% velocity over 5 min
+          pre_cutoff_min: 3,                // skip the 2-min cutoff zone
+          max_window_min: 6,                // only act on near-term binaries
+          max_yes_price_for_buy: 0.70,      // refuse to chase already-priced-in moves
+          min_yes_price_for_sell: 0.30,
+          entry_size_usd: 5,                // small bets — many of them
+          max_positions_per_asset: 1,       // one in-flight binary per asset
         },
       },
     },

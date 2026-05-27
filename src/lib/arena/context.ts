@@ -18,13 +18,29 @@ function isoMinus(days: number): string {
   return new Date(Date.now() - days * 86_400_000).toISOString();
 }
 
+/** Normalize SQLite's bare "YYYY-MM-DD HH:MM:SS" (which IS UTC under
+ *  CURRENT_TIMESTAMP semantics) to a Z-suffixed ISO 8601 string so JS
+ *  `new Date(...)` parses it as UTC instead of local time. Without this,
+ *  every `new Date(captured_at).getTime()` downstream was off by the
+ *  user's local-TZ offset. The fix: replace the space separator with 'T'
+ *  and append 'Z'. Already-ISO inputs are passed through unchanged.
+ *  Bug-fix 2026-05-26 (bug #10). */
+function toIsoZ(s: string): string {
+  if (!s) return s;
+  if (s.endsWith("Z")) return s;
+  if (s.includes("T")) return s.endsWith("Z") ? s : s + "Z";
+  return s.replace(" ", "T") + "Z";
+}
+
 function loadPolySnapshots(sinceIso: string): Snapshot[] {
+  // Use SQLite's datetime() to normalize the input bound so it compares
+  // correctly against captured_at (which is stored as bare UTC text).
   return (db().prepare(
     `SELECT token_id AS market_id, midpoint AS price, yes_price, no_price, spread, category, captured_at
-       FROM market_snapshots WHERE captured_at >= ? AND midpoint IS NOT NULL`,
+       FROM market_snapshots WHERE captured_at >= datetime(?) AND midpoint IS NOT NULL`,
   ).all(sinceIso) as any[]).map((r): Snapshot => ({
     venue: "sim-poly" as Venue, market_id: r.market_id,
-    price: Number(r.price ?? 0), captured_at: r.captured_at,
+    price: Number(r.price ?? 0), captured_at: toIsoZ(r.captured_at),
     category: r.category ?? undefined,
   }));
 }
@@ -32,13 +48,13 @@ function loadPolySnapshots(sinceIso: string): Snapshot[] {
 function loadCbSnapshots(sinceIso: string): Snapshot[] {
   return (db().prepare(
     `SELECT product_id AS market_id, midpoint AS price, best_bid, best_ask, captured_at
-       FROM coinbase_snapshots WHERE captured_at >= ? AND midpoint IS NOT NULL`,
+       FROM coinbase_snapshots WHERE captured_at >= datetime(?) AND midpoint IS NOT NULL`,
   ).all(sinceIso) as any[]).map((r): Snapshot => ({
     venue: "sim-coinbase" as Venue, market_id: r.market_id,
     price: Number(r.price ?? 0),
     bid: r.best_bid != null ? Number(r.best_bid) : undefined,
     ask: r.best_ask != null ? Number(r.best_ask) : undefined,
-    captured_at: r.captured_at,
+    captured_at: toIsoZ(r.captured_at),
   }));
 }
 

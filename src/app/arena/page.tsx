@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { equityCurvesForAgents, listAliveAgentsAcrossGens, listGenerations, toLiveAgent } from "@/lib/arena/db";
+import { equityCurvesForAgents, listAliveAgentsAcrossGens, listAliveElites, listGenerations, toLiveAgent } from "@/lib/arena/db";
 import { rankAgents, liveEquity } from "@/lib/arena/score";
 import { listEligibleChampionships } from "@/lib/arena/championship";
 import { parseGenome, genomeNickname } from "@/lib/arena/genome";
@@ -25,6 +25,27 @@ export default async function ArenaPage() {
   const gens = listGenerations(10);
   const eligible = listEligibleChampionships();
   const currentGen = gens.find((g) => g.sealed_at == null);
+  // Elite preservation — agents flagged is_elite=1 are protected from cull
+  // and tick across gen boundaries. Sorted by descending fitness so the
+  // explainer card lists best first.
+  const eliteRows = listAliveElites();
+  const rankedElites = rankAgents(eliteRows);
+  const eliteCount = Number(process.env.ARENA_ELITE_COUNT ?? "5");
+  const eliteMaxDdPct = Number(process.env.ARENA_ELITE_MAX_DD_PCT ?? "0.20");
+
+  // Live-capital map: paper_agent_id → { capsule_id, capital_usd, status, mode }
+  // Surfaces which agents actually have real money behind their signals so the
+  // operator can spot the live-trading set at a glance. `mode` reflects the
+  // global ALLOW_TRADE gate — a `live`-status capsule with ALLOW_TRADE unset
+  // still routes through the live router but execute.ts returns DRY_RUN.
+  const liveCapsules = db().prepare(
+    `SELECT id, paper_agent_id, status, capital_allocated_usd, current_pnl_usd, daily_pnl_usd, trades_today
+       FROM capsules
+      WHERE status IN ('live', 'paper') AND paper_agent_id IS NOT NULL`,
+  ).all() as Array<{ id: string; paper_agent_id: number; status: string; capital_allocated_usd: number; current_pnl_usd: number; daily_pnl_usd: number; trades_today: number }>;
+  const capsuleByAgent = new Map<number, typeof liveCapsules[number]>();
+  for (const c of liveCapsules) capsuleByAgent.set(c.paper_agent_id, c);
+  const allowTradeLive = process.env.ALLOW_TRADE === "1";
 
   // All-time top agents (any gen, dead or alive) by net PnL — shown above the
   // current-gen leaderboard so freshly-bred 0-trade agents don't drown out the
@@ -35,7 +56,7 @@ export default async function ArenaPage() {
   // cash+unrealized would treat every open entry as an immediate loss equal
   // to the position size. Bug-fix 2026-05-25.
   const allTimeTop = db().prepare(
-    `SELECT pa.id, pa.name, pa.generation, pa.alive,
+    `SELECT pa.id, pa.name, pa.generation, pa.alive, pa.is_elite,
             pa.cash_usd_start, pa.cash_usd_current,
             pa.realized_pnl_usd, pa.unrealized_pnl_usd,
             pa.trades_count, pa.wins_count,
@@ -51,7 +72,7 @@ export default async function ArenaPage() {
       WHERE EXISTS (SELECT 1 FROM paper_trades pt WHERE pt.paper_agent_id = pa.id)
       ORDER BY net_pnl DESC, realized_pnl_usd DESC, entries_count DESC
       LIMIT 10`,
-  ).all() as Array<{ id: number; name: string; generation: number; alive: 0 | 1; cash_usd_start: number; cash_usd_current: number; realized_pnl_usd: number; unrealized_pnl_usd: number; trades_count: number; wins_count: number; kind: string; net_pnl: number; entries_count: number; open_principal: number }>;
+  ).all() as Array<{ id: number; name: string; generation: number; alive: 0 | 1; is_elite: 0 | 1; cash_usd_start: number; cash_usd_current: number; realized_pnl_usd: number; unrealized_pnl_usd: number; trades_count: number; wins_count: number; kind: string; net_pnl: number; entries_count: number; open_principal: number }>;
 
   // Batched equity curves so each row can render an inline sparkline without
   // issuing 28+ extra queries.
@@ -111,11 +132,95 @@ export default async function ArenaPage() {
         )}
       </div>
 
-      <section className="grid grid-cols-4 gap-4">
+      <section className="grid grid-cols-5 gap-4">
         <Stat label="Alive agents" value={ranked.length.toString()} />
         <Stat label="Generations sealed" value={gens.filter((g) => g.sealed_at != null).length.toString()} />
         <Stat label="Eligible champions" value={eligible.length.toString()} hint={eligible.length > 0 ? "review on /capsules" : ""} />
+        <Stat label="Elites preserved" value={`${eliteRows.length} / ${eliteCount}`} hint={`top-${eliteCount} across all gens · DD cap ${(eliteMaxDdPct * 100).toFixed(0)}%`} />
         <Stat label="Mutation mode" value={(process.env.ARENA_MUTATION_MODE ?? "programmatic").toUpperCase()} hint="ARENA_MUTATION_MODE env" />
+      </section>
+
+      {/* Elite preservation explainer + current elite roster. Surfaces what
+       *  the amber ELITE pill on the leaderboard means and which agents are
+       *  currently exempt from cull. */}
+      <section className="card border-accent-amber/30 bg-accent-amber/5">
+        <div className="flex items-baseline justify-between mb-2">
+          <h2 className="card-title m-0 text-accent-amber">Elite roster ({eliteRows.length})</h2>
+          <span className="text-[10px] text-zinc-500">
+            top-{eliteCount} by fitness · drawdown cap {(eliteMaxDdPct * 100).toFixed(0)}% · re-evaluated every seal
+          </span>
+        </div>
+        <p className="text-xs text-zinc-400 mb-2">
+          Elites are protected from retirement at gen seal time. They keep their accumulated cash,
+          open positions, and PnL across generations, and continue trading on every tick. An elite
+          whose drawdown crosses the cap loses its flag and re-enters the normal cull pool.
+        </p>
+        {rankedElites.length === 0 ? (
+          <p className="text-xs text-zinc-500 italic">
+            No elites yet — top-{eliteCount} alive agents will be promoted at the next gen seal.
+            (Current open gen: g{currentGen?.gen_number ?? "—"} · seal triggers at ARENA_EVOLVE_EVERY ticks.)
+          </p>
+        ) : (
+          <table className="list">
+            <thead><tr><th>#</th><th>Agent</th><th>Born</th><th>Strategy</th><th className="text-right">Equity</th><th className="text-right">PnL%</th><th className="text-right">DD%</th><th className="text-right">Fitness</th><th className="text-right">Entries</th><th className="text-right">Round-trips</th><th className="text-right" title="Live capsule capital + ALLOW_TRADE mode">Live $</th></tr></thead>
+            <tbody>
+              {rankedElites.map(({ agent, score }, i) => {
+                const equity = liveEquity(agent);
+                const nick = (() => { try { return genomeNickname(parseGenome(agent.genome_json)); } catch { return "?"; } })();
+                const ddNearCap = score.max_dd_pct > eliteMaxDdPct * 0.75;
+                const capsule = capsuleByAgent.get(agent.id);
+                const isAi = /llm_probability_oracle/.test(agent.genome_json);
+                return (
+                  <tr key={agent.id}>
+                    <td className="text-zinc-500 text-xs">{i + 1}</td>
+                    <td>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <Link className="text-zinc-100 hover:text-accent-blue" href={`/arena/${agent.id}`}>{agent.name}</Link>
+                        <span className="inline-flex items-center text-[10px] leading-none px-1.5 py-0.5 rounded bg-accent-amber/20 text-accent-amber border border-accent-amber/40">ELITE</span>
+                        <span
+                          className={`inline-flex items-center text-[10px] leading-none px-1.5 py-0.5 rounded border ${isAi ? "bg-accent-blue/15 text-accent-blue border-accent-blue/40" : "bg-zinc-700/40 text-zinc-400 border-zinc-600/40"}`}
+                          title={isAi
+                            ? "AI: this agent's genome includes an llm_probability_oracle component — Claude estimates probability per market"
+                            : "Pattern matcher: deterministic rules (velocity / z-score / threshold). No LLM involved."}
+                        >{isAi ? "🧠 AI" : "📐 pattern"}</span>
+                        {capsule && (
+                          <span
+                            className={`inline-flex items-center text-[10px] leading-none px-1.5 py-0.5 rounded border ${allowTradeLive ? "bg-accent-green/20 text-accent-green border-accent-green/60" : "bg-zinc-700/40 text-zinc-300 border-zinc-500/40"}`}
+                            title={allowTradeLive
+                              ? `LIVE: $${capsule.capital_allocated_usd} capital, capsule ${capsule.id.slice(0, 8)} — real orders armed`
+                              : `Paper-live: $${capsule.capital_allocated_usd} capital, capsule ${capsule.id.slice(0, 8)} — orders DRY_RUN (ALLOW_TRADE unset)`}
+                          >{allowTradeLive ? "💰 LIVE" : "📝 PAPER"}</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="text-zinc-400 text-xs">
+                      <Link className="hover:text-accent-blue" href={`/arena/generations/${agent.generation}`}>g{agent.generation}</Link>
+                    </td>
+                    <td className="text-zinc-400 text-xs">{nick}</td>
+                    <td className="text-right tabular-nums">{fmtUsd(equity)}</td>
+                    <td className={`text-right tabular-nums ${score.pnl_pct >= 0 ? "text-accent-green" : "text-accent-red"}`}>{fmtPct(score.pnl_pct)}</td>
+                    <td className={`text-right tabular-nums ${ddNearCap ? "text-accent-red" : "text-zinc-400"}`} title={ddNearCap ? `near cap of ${(eliteMaxDdPct * 100).toFixed(0)}%` : ""}>{fmtPct(score.max_dd_pct)}</td>
+                    <td className={`text-right tabular-nums ${score.fitness >= 0 ? "text-accent-green" : "text-accent-red"}`}>{score.fitness.toFixed(4)}</td>
+                    <td className="text-right tabular-nums text-zinc-400">{score.entries_count}</td>
+                    <td className="text-right tabular-nums text-zinc-400">{score.trades_count}</td>
+                    <td className="text-right tabular-nums text-xs whitespace-nowrap">
+                      {capsule ? (
+                        <span title={`today: ${capsule.trades_today} trades, daily P/L $${capsule.daily_pnl_usd.toFixed(2)}`}>
+                          <span className="text-zinc-300">${capsule.capital_allocated_usd.toFixed(2)}</span>
+                          <span className={`ml-2 ${capsule.current_pnl_usd >= 0 ? "text-accent-green" : "text-accent-red"}`}>
+                            {capsule.current_pnl_usd >= 0 ? "+" : "−"}${Math.abs(capsule.current_pnl_usd).toFixed(2)}
+                          </span>
+                        </span>
+                      ) : (
+                        <span className="text-zinc-600">—</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
       </section>
 
       {eligible.length > 0 && (
@@ -143,7 +248,7 @@ export default async function ArenaPage() {
           <p className="text-xs text-zinc-500">No agent has traded yet across any generation. Wait for the snapshot worker to fill enough history for momentum / fade strategies to fire.</p>
         ) : (
           <table className="list">
-            <thead><tr><th>#</th><th>Agent</th><th>Gen</th><th>Kind</th><th>Status</th><th className="text-right">Start</th><th className="text-right">Equity</th><th className="text-right">Net PnL</th><th className="text-right">Entries</th><th className="text-right">Trades</th><th className="text-right">Win%</th><th>Equity curve</th></tr></thead>
+            <thead><tr><th>#</th><th>Agent</th><th>Gen</th><th>Kind</th><th>Status</th><th className="text-right">Start</th><th className="text-right">Equity</th><th className="text-right">Net PnL</th><th className="text-right" title="Positions opened (including still-open)">Entries</th><th className="text-right" title="Round-trips (closed positions only)">Round-trips</th><th className="text-right">Win%</th><th>Equity curve</th></tr></thead>
             <tbody>
               {allTimeTop.map((r, i) => {
                 const curve = equityCurves.get(r.id) ?? [];
@@ -151,10 +256,19 @@ export default async function ArenaPage() {
                 return (
                 <tr key={r.id}>
                   <td className="text-zinc-500 text-xs">{i + 1}</td>
-                  <td><Link className="text-zinc-100 hover:text-accent-blue" href={`/arena/${r.id}`}>{r.name}</Link></td>
+                  <td>
+                    <Link className="text-zinc-100 hover:text-accent-blue" href={`/arena/${r.id}`}>{r.name}</Link>
+                    {r.is_elite ? <span className="ml-1.5 text-[10px] px-1 rounded bg-accent-amber/20 text-accent-amber border border-accent-amber/40">ELITE</span> : null}
+                  </td>
                   <td className="text-zinc-400 text-xs">g{r.generation}</td>
                   <td className="text-zinc-400 text-xs">{r.kind?.replace(/_/g, "-")}</td>
-                  <td>{r.alive ? <span className="pill-green">alive</span> : <span className="pill-amber">retired</span>}</td>
+                  <td>
+                    {r.alive
+                      ? (r.is_elite
+                          ? <span className="pill-amber" title="Elite — protected from cull across generations">elite</span>
+                          : <span className="pill-green">alive</span>)
+                      : <span className="pill-amber">retired</span>}
+                  </td>
                   <td className="text-right tabular-nums text-zinc-400">${r.cash_usd_start.toFixed(2)}</td>
                   <td className="text-right tabular-nums">${(r.cash_usd_current + (r.open_principal ?? 0) + r.unrealized_pnl_usd).toFixed(2)}</td>
                   <td className={`text-right tabular-nums ${r.net_pnl >= 0 ? "text-accent-green" : "text-accent-red"}`}>{r.net_pnl >= 0 ? "+" : ""}${r.net_pnl.toFixed(2)}</td>
@@ -188,7 +302,9 @@ export default async function ArenaPage() {
               <tr>
                 <th>#</th><th>Agent</th><th>Gen</th><th>Strategy</th><th>Status</th><th className="text-right">Equity</th>
                 <th className="text-right">PnL%</th><th className="text-right">DD%</th><th className="text-right">Fitness</th>
-                <th className="text-right">Entries</th><th className="text-right">Trades</th><th className="text-right">Win%</th><th>Equity curve</th>
+                <th className="text-right" title="Positions opened (including still-open)">Entries</th>
+                <th className="text-right" title="Round-trips (closed positions only)">Round-trips</th>
+                <th className="text-right">Win%</th><th>Equity curve</th>
               </tr>
             </thead>
             <tbody>
@@ -201,7 +317,10 @@ export default async function ArenaPage() {
                 return (
                   <tr key={agent.id}>
                     <td className="text-zinc-500 text-xs">{i + 1}</td>
-                    <td><Link className="text-zinc-100 hover:text-accent-blue" href={`/arena/${agent.id}`}>{agent.name}</Link></td>
+                    <td>
+                      <Link className="text-zinc-100 hover:text-accent-blue" href={`/arena/${agent.id}`}>{agent.name}</Link>
+                      {agent.is_elite ? <span className="ml-1.5 text-[10px] px-1 rounded bg-accent-amber/20 text-accent-amber border border-accent-amber/40">ELITE</span> : null}
+                    </td>
                     <td className="text-zinc-400 text-xs">g{agent.generation}</td>
                     <td className="text-zinc-400 text-xs">{nick}</td>
                     <td className="text-xs"><DiagCell diag={diag} /></td>
@@ -228,11 +347,15 @@ export default async function ArenaPage() {
           <tbody>
             {gens.map((g) => (
               <tr key={g.id}>
-                <td className="text-zinc-100">g{g.gen_number}</td>
+                <td>
+                  <Link href={`/arena/generations/${g.gen_number}`} className="text-zinc-100 hover:text-accent-blue">
+                    g{g.gen_number}
+                  </Link>
+                </td>
                 <td><span className={g.sealed_at ? "pill-green" : "pill-blue"}>{g.sealed_at ? "sealed" : "open"}</span></td>
                 <td className="text-right tabular-nums">{g.n_agents}</td>
                 <td className="text-right tabular-nums text-zinc-400">{g.top_score != null ? g.top_score.toFixed(4) : "—"}</td>
-                <td className="text-zinc-400 text-xs">{g.top_paper_agent_id ?? "—"}</td>
+                <td className="text-zinc-400 text-xs">{g.top_paper_agent_id ? <Link className="hover:text-accent-blue" href={`/arena/${g.top_paper_agent_id}`}>#{g.top_paper_agent_id}</Link> : "—"}</td>
                 <td className="text-xs text-zinc-500">{g.sealed_at ? new Date(g.sealed_at).toLocaleString() : "—"}</td>
               </tr>
             ))}

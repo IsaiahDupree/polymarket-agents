@@ -23,3 +23,17 @@
   table.list td { @apply py-2 border-b border-ink-800/60; }
   table.list tr:hover td { @apply bg-ink-800/60; }
 }
+
+/* Trade ticker marquee — slides the duplicated list across the bar in
+   60 seconds, pauses on hover so links are clickable. */
+@keyframes ticker-scroll {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+.ticker-track {
+  animation: ticker-scroll 60s linear infinite;
+  will-change: transform;
+}
+.ticker-track:hover {
+  animation-play-state: paused;
+}

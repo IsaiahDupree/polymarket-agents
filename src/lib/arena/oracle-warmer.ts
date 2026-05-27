@@ -11,7 +11,7 @@
  *
  * Spec: `docs/prds/lunar-inspired-arena-strategies.md` §6.5 cost cap.
  */
-import { callOracle } from "./llm-oracle";
+import { callOracle, isRateLimitCoolingDown, rateLimitMinRemaining } from "./llm-oracle";
 import { checkBudget } from "./llm-oracle-budget";
 import { liveEquity } from "./score";
 import { db } from "@/lib/db/client";
@@ -67,6 +67,9 @@ export async function warmOracleCacheForTick(agents: LiveAgent[], ctx: TickConte
 
   const budget = checkBudget();
   if (!budget.allowed) return { attempted: false, reason: `budget exhausted ($${budget.spent_usd.toFixed(3)}/${budget.cap_usd})` };
+  if (isRateLimitCoolingDown()) {
+    return { attempted: false, reason: `rate-limit cooldown (${rateLimitMinRemaining().toFixed(0)}m remaining)` };
+  }
 
   const result = await callOracle({
     marketId: pick.id,
@@ -78,6 +81,15 @@ export async function warmOracleCacheForTick(agents: LiveAgent[], ctx: TickConte
     cacheTtlMin: params.cache_ttl_min,
     callerAgentId: top.id,
   });
-  if (!result) return { attempted: true, market_id: pick.id, reason: "oracle returned null (auth/parse/budget)" };
+  if (!result) {
+    // Inspect the call log to give a precise reason instead of the previous
+    // catch-all "auth/parse/budget". The most recent llm_call_log row tells
+    // us exactly which classification fired.
+    const lastErr = db().prepare(
+      `SELECT error_kind FROM llm_call_log WHERE market_id = ? ORDER BY called_at DESC LIMIT 1`,
+    ).get(pick.id) as { error_kind: string | null } | undefined;
+    const why = lastErr?.error_kind ?? "no-call (auth missing or cache miss with budget exhausted)";
+    return { attempted: true, market_id: pick.id, reason: `oracle returned null (${why})` };
+  }
   return { attempted: true, market_id: pick.id, result: { probability: result.probability, confidence: result.confidence } };
 }

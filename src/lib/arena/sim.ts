@@ -14,9 +14,10 @@
  * fee model, the sim deducts it from realized PnL on exit).
  */
 import type { Genome } from "./genome";
-import { acceleration, loadRecentCandles, velocity } from "./momentum";
+import { acceleration, loadRecentCandles, loadRecentCandlesFromCoindesk, velocity, type Candle } from "./momentum";
 import { recentFillsForWalletInCategory, walletWinRateByCategory } from "@/lib/wallet/category-stats";
 import { peekOracleCache } from "./llm-oracle";
+import { assetToFeed, getBinaryMeta, type BinaryAsset } from "./short-binaries";
 import type {
   LiveAgent, PaperTradeRow, Position, Signal, Snapshot, SnapshotWindow, TickContext, Venue,
 } from "./types";
@@ -333,6 +334,7 @@ function decideForSub(g: import("./genome").SubGenome, agent: LiveAgent, ctx: Ti
     case "wallet_copy_filtered": return decideWalletCopyFiltered(g, agent, ctx);
     case "polymarket_market_maker": return decidePolyMarketMaker(g, agent, ctx);
     case "llm_probability_oracle": return decideLlmProbabilityOracle(g, agent, ctx);
+    case "poly_short_binary_directional": return decidePolyShortBinary(g, agent, ctx);
   }
 }
 
@@ -419,6 +421,91 @@ function decideCategorySpecialist(g: Extract<Genome, { kind: "category_specialis
   return holdSignal();
 }
 
+function decidePolyShortBinary(g: Extract<Genome, { kind: "poly_short_binary_directional" }>, agent: LiveAgent, ctx: TickContext): Signal {
+  // Trade Polymarket's rolling 5-min crypto Up-or-Down binaries.
+  //
+  // Entry rules:
+  //   - minutes_to_expiry must be in [pre_cutoff_min, max_window_min] (skip
+  //     binaries that are already past the 2-min cutoff and skip ones too
+  //     far out to be informative)
+  //   - velocity over `vel_window_min` Coinbase 1-min candles must exceed
+  //     vel_entry_pct in magnitude
+  //   - YES price gate: don't pay through our edge (skip if YES already prices
+  //     in the move). Symmetric gate for SELL/NO side.
+  //   - size_usd capped by agent cash.
+  // Time stop = the binary's expiry (the resolver will then settle PnL).
+  const allowed = new Set(g.params.assets.split(",").map((s) => s.trim().toUpperCase()) as BinaryAsset[]);
+  const nowMs = new Date(ctx.now).getTime();
+
+  // Per-asset position counter — used to enforce max_positions_per_asset.
+  // Looking up metadata for every open position is cheap (indexed PK) and
+  // O(n_positions) where n is bounded by the agent's own cap.
+  const cap = g.params.max_positions_per_asset ?? 1;
+  const openByAsset = new Map<string, number>();
+  for (const pos of agent.positions) {
+    const m = getBinaryMeta(pos.market_id);
+    if (!m) continue;
+    openByAsset.set(m.asset, (openByAsset.get(m.asset) ?? 0) + 1);
+  }
+
+  // Pre-collect binary candidates with their fresh price & metadata.
+  type Candidate = {
+    token_id: string;
+    mid: number;
+    meta: ReturnType<typeof getBinaryMeta>;
+    minToExpiry: number;
+    feed: { exchange: "coinbase" | "okx"; instrument: string };
+  };
+  const candidates: Candidate[] = [];
+  for (const [tokenId, win] of ctx.snapshots) {
+    if (win.latest.venue !== "sim-poly") continue;
+    if (!win.latest.category || !win.latest.category.endsWith("-binary")) continue;
+    if (agent.positions.some((p) => p.market_id === tokenId)) continue;
+    const meta = getBinaryMeta(tokenId);
+    if (!meta || meta.settled) continue;
+    if (!allowed.has(meta.asset as BinaryAsset)) continue;
+    // Per-asset cap — refuse another bet on an asset we already hold N of.
+    if ((openByAsset.get(meta.asset) ?? 0) >= cap) continue;
+    const feed = assetToFeed(meta.asset as BinaryAsset);
+    if (!feed) continue;
+    const expMs = new Date(meta.expiry_iso).getTime();
+    const minToExpiry = (expMs - nowMs) / 60_000;
+    if (minToExpiry < g.params.pre_cutoff_min) continue;
+    if (minToExpiry > g.params.max_window_min) continue;
+    candidates.push({ token_id: tokenId, mid: win.latest.price, meta, minToExpiry, feed });
+  }
+  if (candidates.length === 0) return holdSignal();
+  // Order by soonest-expiring first — those are the most actionable.
+  candidates.sort((a, b) => a.minToExpiry - b.minToExpiry);
+
+  const cutoffUnix = Math.floor(nowMs / 1000);
+  const lookbackMin = Math.max(g.params.vel_window_min * 3 + 3, 10);
+  for (const c of candidates) {
+    const candles: Candle[] = c.feed.exchange === "coinbase"
+      ? loadRecentCandles(c.feed.instrument, lookbackMin, { cutoffUnix })
+      : loadRecentCandlesFromCoindesk("okx", c.feed.instrument, lookbackMin, { cutoffUnix });
+    if (candles.length < g.params.vel_window_min + 1) continue;
+    const v = velocity(candles, g.params.vel_window_min);
+    if (!Number.isFinite(v)) continue;
+    if (Math.abs(v) < g.params.vel_entry_pct) continue;
+
+    const side: "BUY" | "SELL" = v > 0 ? "BUY" : "SELL";
+    if (side === "BUY" && c.mid > g.params.max_yes_price_for_buy) continue;
+    if (side === "SELL" && c.mid < g.params.min_yes_price_for_sell) continue;
+
+    const size = Math.min(g.params.entry_size_usd, agent.cash_usd_current);
+    if (size <= 0) continue;
+
+    return {
+      kind: "entry", venue: "sim-poly", market_id: c.token_id, side,
+      size_usd: size,
+      rationale: `5m-binary ${c.meta!.asset} ${side === "BUY" ? "UP" : "DOWN"} v=${(v * 100).toFixed(3)}% mid=${c.mid.toFixed(3)} ttl=${c.minToExpiry.toFixed(1)}m`,
+      time_stop_at: c.meta!.expiry_iso,
+    };
+  }
+  return holdSignal();
+}
+
 function decideRandomWalk(g: Extract<Genome, { kind: "random_walk_baseline" }>, agent: LiveAgent, ctx: TickContext, rng: () => number): Signal {
   if (rng() > g.params.trade_prob) return holdSignal();
   const ids = Array.from(ctx.snapshots.keys()).filter((mid) => !agent.positions.some((p) => p.market_id === mid));
@@ -468,6 +555,7 @@ export function decide(agent: LiveAgent, ctx: TickContext, rng: () => number): S
     case "wallet_copy_filtered":  return decideWalletCopyFiltered(g, agent, ctx);
     case "polymarket_market_maker": return decidePolyMarketMaker(g, agent, ctx);
     case "llm_probability_oracle": return decideLlmProbabilityOracle(g, agent, ctx);
+    case "poly_short_binary_directional": return decidePolyShortBinary(g, agent, ctx);
     case "multi_strategy":        return decideMultiStrategy(g, agent, ctx, rng);
   }
 }
@@ -520,8 +608,16 @@ export function applySignal(agent: LiveAgent, signal: Signal, ctx: TickContext, 
   const win = ctx.snapshots.get(signal.market_id);
   if (!win) return {};
   const px = win.latest.price;
-  // PnL: long → (exit - entry) / entry × size; short → (entry - exit) / entry × size
-  const shareRet = pos.side === "BUY" ? (px - pos.entry_price) / pos.entry_price : (pos.entry_price - px) / pos.entry_price;
+  // PnL on Polymarket-style 0..1 markets: SELL-YES is executed by the live
+  // router as BUY-NO at price (1 - yes_mid), so the sim must mirror that
+  // bounded-loss math (max loss = stake). Pre-2026-05-26 we used the
+  // unbounded short-CFD formula (entry - exit) / entry which produced losses
+  // up to ~20× stake when shorting near-zero YES prices.
+  //   BUY:  shareRet = (px - entry) / entry
+  //   SELL: shareRet = (entry - px) / (1 - entry)   ← BUY-NO equivalent
+  const shareRet = pos.side === "BUY"
+    ? (px - pos.entry_price) / pos.entry_price
+    : (pos.entry_price - px) / (1 - pos.entry_price);
   const grossPnl = pos.size_usd * shareRet;
   const fee = (pos.size_usd * feeBps(pos.venue)) / 10_000;
   const realized = grossPnl - fee;
@@ -554,7 +650,10 @@ export function markToMarket(agent: LiveAgent, ctx: TickContext): void {
     const win = ctx.snapshots.get(pos.market_id);
     if (!win) continue;
     const px = win.latest.price;
-    const shareRet = pos.side === "BUY" ? (px - pos.entry_price) / pos.entry_price : (pos.entry_price - px) / pos.entry_price;
+    // Mirror applySignal's BUY-NO-equivalent SELL math (bounded loss).
+    const shareRet = pos.side === "BUY"
+      ? (px - pos.entry_price) / pos.entry_price
+      : (pos.entry_price - px) / (1 - pos.entry_price);
     unr += pos.size_usd * shareRet;
   }
   agent.unrealized_pnl_usd = unr;

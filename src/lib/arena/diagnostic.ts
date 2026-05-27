@@ -276,6 +276,22 @@ export function diagnoseAgent(agent: LiveAgent, ctx: TickContext): AgentDiagnost
         label: `${p.category}/${inner} · ${candidates} mkts · best=${bestMove.toFixed(1)}pt / ≥${p.threshold_pts.toFixed(1)}pt`,
       };
     }
+    case "poly_short_binary_directional": {
+      const p = g.params;
+      const assets = new Set(p.assets.split(",").map((s) => s.trim().toUpperCase()));
+      let inWindow = 0;
+      let totalBinaries = 0;
+      const nowMs = new Date(ctx.now).getTime();
+      for (const [, win] of ctx.snapshots) {
+        if (win.latest.venue !== "sim-poly") continue;
+        if (!win.latest.category || !win.latest.category.endsWith("-binary")) continue;
+        totalBinaries += 1;
+      }
+      // Cheap heuristic — count binaries in `pre_cutoff_min..max_window_min` for any allowed asset.
+      // We avoid a per-tick DB sweep here; the strategy decide() does the precise check.
+      const label = `assets=${[...assets].join("/")} · ${totalBinaries} binaries in ctx · vel≥${(p.vel_entry_pct * 100).toFixed(3)}%`;
+      return { status: totalBinaries > 0 ? "watching" : "no-data", label };
+    }
   }
 }
 

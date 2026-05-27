@@ -23,7 +23,7 @@
  */
 import Anthropic from "@anthropic-ai/sdk";
 import { authIsAvailable, getOAuthClient } from "@/lib/anthropic/auth";
-import type { DependencyConstraint } from "./arb.ts";
+import type { DependencyConstraint } from "./arb";
 
 export type MarketForInference = {
   /** Stable id (Polymarket conditionId or our own surrogate). */

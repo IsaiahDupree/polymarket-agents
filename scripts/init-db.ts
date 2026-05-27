@@ -69,6 +69,7 @@ ensureColumn("llm_call_log", "error_kind", "error_kind TEXT");
 // activity bonus in the fitness formula needs to reward action even when an
 // agent's positions are still open — i.e. entered but not yet exited.
 ensureColumn("paper_agents", "entries_count", "entries_count INTEGER NOT NULL DEFAULT 0");
+ensureColumn("paper_agents", "is_elite", "is_elite INTEGER NOT NULL DEFAULT 0");
 // Backfill: agents that already have paper_trades rows with intent='entry'
 // get their column synced from history. Idempotent — re-running this script
 // recomputes from paper_trades each time, but since the column has a default

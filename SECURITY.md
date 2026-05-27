@@ -9,10 +9,13 @@ This repo is designed to be safe to publish. The threat that matters most is **a
 | Polymarket signer **private key** | `.env.local` | **No** (gitignored) |
 | Polymarket relayer API key + signer address | `.env.local` | **No** (gitignored) |
 | Polymarket CLOB L2 derived API key/secret/passphrase | `.env.local` (populated by `npm run derive:creds`) | **No** (gitignored) |
+| Coinbase CDP API key **private key** (PEM) | `coinbase_cloud_api_key.json` at repo root, OR inline in `.env.local` as `COINBASE_CDP_PRIVATE_KEY` | **No** (gitignored — both paths) |
+| Coinbase CDP API key **name** (org/key path) | same file as above | **No** (gitignored) |
 | Anthropic Claude OAuth tokens | `~/.claude/.credentials.json` (outside the repo entirely) | **No** (the file is in your home dir) |
 | `ANTHROPIC_API_KEY` if you set one | env var or `.env.local` | **No** (gitignored) |
 | Local SQLite (`data/polymarket.db`) — contains tracked-wallet addresses + research notes | `data/` | **No** (gitignored — entire `data/` folder) |
-| Last endpoint-sweep results (may include user-scoped position data) | `docs/test-results.json` | **No** (gitignored) |
+| Last Polymarket endpoint-sweep results (may include user-scoped position data) | `docs/test-results.json` | **No** (gitignored) |
+| Last Coinbase endpoint-sweep results (may include account balances, order history) | `docs/coinbase-test-results.json` | **No** (gitignored) |
 
 The `data/` folder is **entirely** gitignored — anything you put there is local to your machine.
 

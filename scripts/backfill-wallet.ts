@@ -77,7 +77,11 @@ async function resolveAddress(input: string): Promise<{ address: `0x${string}`; 
   const addr = resolved.address.toLowerCase() as `0x${string}`;
   console.log(`[backfill] wallet ${addr}${resolved.userName ? ` (@${resolved.userName})` : ""}${resolved.pnl ? ` PnL all-time $${Math.round(resolved.pnl)}` : ""}`);
 
-  const client = createPublicClient({ chain: polygon, transport: http() });
+  // RPC override via env so users can swap when the default rate-limits.
+  // Verified options: https://polygon.drpc.org, custom Alchemy/Infura URLs.
+  const rpcUrl = process.env.POLYGON_RPC_URL;
+  const client = createPublicClient({ chain: polygon, transport: rpcUrl ? http(rpcUrl) : http() });
+  if (rpcUrl) console.log(`[backfill] RPC: ${rpcUrl}`);
   const latest = await client.getBlockNumber();
   const start = latest - BigInt(blocksArg);
   console.log(`[backfill] scanning blocks ${start.toLocaleString()} → ${latest.toLocaleString()} (${blocksArg.toLocaleString()} blocks, ${chunkArg.toLocaleString()}-block chunks)`);
@@ -99,12 +103,16 @@ async function resolveAddress(input: string): Promise<{ address: `0x${string}`; 
 
   for (const ex of exchanges) {
     let totalForExchange = 0;
+    let chunksWithFills = 0;
+    let chunksScanned = 0;
+    let chunksErrored = 0;
     // Two passes — one with the wallet as `maker`, one as `taker`. The event
     // indexes orderHash (topic1), maker (topic2), taker (topic3). We pass
     // `args` with `maker` or `taker` and viem builds the right topic filter.
     for (const role of ["maker", "taker"] as const) {
       for (let from = start; from <= latest; from += BigInt(chunkArg)) {
         const to = from + BigInt(chunkArg) - 1n > latest ? latest : from + BigInt(chunkArg) - 1n;
+        chunksScanned += 1;
         let logs;
         try {
           logs = await client.getLogs({
@@ -115,8 +123,15 @@ async function resolveAddress(input: string): Promise<{ address: `0x${string}`; 
             toBlock: to,
           });
         } catch (err) {
+          chunksErrored += 1;
           console.warn(`[backfill] ${ex.tag} ${role} ${from}-${to} err: ${(err as Error).message.slice(0, 80)}`);
           continue;
+        }
+        if (logs.length > 0) {
+          chunksWithFills += 1;
+          if (process.env.BACKFILL_VERBOSE) {
+            console.log(`[backfill] ${ex.tag} ${role} ${from}-${to}: ${logs.length} fills`);
+          }
         }
         for (const log of logs) {
           const a = (log as any).args;
@@ -149,7 +164,7 @@ async function resolveAddress(input: string): Promise<{ address: `0x${string}`; 
         }
       }
     }
-    console.log(`[backfill] ${ex.tag}: ${totalForExchange} fills`);
+    console.log(`[backfill] ${ex.tag}: ${totalForExchange} fills (scanned ${chunksScanned} chunks · ${chunksWithFills} non-empty · ${chunksErrored} errored)`);
     totalFills += totalForExchange;
   }
 

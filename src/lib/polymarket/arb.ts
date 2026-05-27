@@ -183,7 +183,7 @@ export async function findCombinatorialArbs(
   if (totalOutcomes === 0) return { kind: "no-arb" };
 
   // Build LP outcome list with capped depth (the article's 50%-of-book rule).
-  const { solveArbLp, solveColumnGen } = await import("./lp.ts");
+  const { solveArbLp, solveColumnGen } = await import("./lp");
   const lpOutcomes = markets.flatMap((m) => m.outcomes.map((o) => ({
     id: o.tokenId,
     price: o.askPrice,

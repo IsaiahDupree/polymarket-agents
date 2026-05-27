@@ -16,7 +16,11 @@ export default async function GenerationsPage() {
         <tbody>
           {gens.map((g) => (
             <tr key={g.id}>
-              <td className="text-zinc-100">g{g.gen_number}</td>
+              <td>
+                <Link href={`/arena/generations/${g.gen_number}`} className="text-zinc-100 hover:text-accent-blue">
+                  g{g.gen_number}
+                </Link>
+              </td>
               <td><span className={g.sealed_at ? "pill-green" : "pill-blue"}>{g.sealed_at ? "sealed" : "open"}</span></td>
               <td className="text-xs text-zinc-500">{new Date(g.started_at).toLocaleString()}</td>
               <td className="text-xs text-zinc-500">{g.sealed_at ? new Date(g.sealed_at).toLocaleString() : "—"}</td>

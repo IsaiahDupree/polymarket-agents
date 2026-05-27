@@ -8,6 +8,10 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { env } from "./_env.ts";
 import { l1Headers } from "../src/lib/polymarket/sign.ts";
+// Use proxy-aware fetch — derive endpoint is on clob.polymarket.com which is
+// geo-restricted. polyFetch routes through Webshare GB when POLYMARKET_PROXY_URL
+// is set, otherwise behaves like native fetch.
+import { polyFetch } from "../src/lib/polymarket/proxy-routing.ts";
 
 async function deriveOrCreate(): Promise<{ apiKey: string; secret: string; passphrase: string }> {
   if (!env.PRIVATE_KEY) throw new Error("POLYMARKET_PRIVATE_KEY missing in .env.local");
@@ -19,7 +23,7 @@ async function deriveOrCreate(): Promise<{ apiKey: string; secret: string; passp
     chainId: env.CHAIN_ID,
   });
 
-  const deriveRes = await fetch(`${env.CLOB}/auth/derive-api-key`, { method: "GET", headers });
+  const deriveRes = await polyFetch(`${env.CLOB}/auth/derive-api-key`, { method: "GET", headers });
   if (deriveRes.ok) {
     return await deriveRes.json();
   }
@@ -33,7 +37,7 @@ async function deriveOrCreate(): Promise<{ apiKey: string; secret: string; passp
     nonce: 0n,
     chainId: env.CHAIN_ID,
   });
-  const createRes = await fetch(`${env.CLOB}/auth/api-key`, { method: "POST", headers: headers2 });
+  const createRes = await polyFetch(`${env.CLOB}/auth/api-key`, { method: "POST", headers: headers2 });
   if (!createRes.ok) {
     throw new Error(`create failed (${createRes.status}): ${(await createRes.text()).slice(0, 400)}`);
   }

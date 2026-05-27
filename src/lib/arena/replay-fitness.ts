@@ -45,7 +45,7 @@ export function computeReplayFitness(genome: Genome, opts: ReplayFitnessOpts = {
     cash_usd_start: cash, cash_usd_current: cash, position_basket_json: "[]",
     realized_pnl_usd: 0, unrealized_pnl_usd: 0,
     peak_equity_usd: cash, max_drawdown_usd: 0,
-    trades_count: 0, entries_count: 0, wins_count: 0, alive: 1, retire_reason: null, retired_at: null,
+    trades_count: 0, entries_count: 0, wins_count: 0, alive: 1, is_elite: 0, retire_reason: null, retired_at: null,
     created_at: startIso, updated_at: startIso,
     genome, positions: [] as Position[],
   };

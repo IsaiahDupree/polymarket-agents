@@ -5,9 +5,11 @@
  */
 import { poly } from "@/lib/polymarket/client";
 import { cb } from "@/lib/coinbase/client";
+import { okx } from "@/lib/okx/client";
 import { recordMarketSnapshot } from "@/lib/db/queries";
 import { classifyMarket } from "@/lib/polymarket/category";
 import { db } from "@/lib/db/client";
+import { fetchShortBinaries, type BinaryAsset } from "./short-binaries";
 
 // Env defaults read at CALL time (not module load) so tests can swap them
 // per-case without vi.resetModules().
@@ -15,7 +17,7 @@ function defaultPolyLimit(): number {
   return Number(process.env.ARENA_SNAPSHOT_POLY_LIMIT ?? "20");
 }
 function defaultCbProducts(): string[] {
-  return (process.env.ARENA_SNAPSHOT_CB_PRODUCTS ?? "BTC-USD,ETH-USD,SOL-USD")
+  return (process.env.ARENA_SNAPSHOT_CB_PRODUCTS ?? "BTC-USD,ETH-USD,SOL-USD,XRP-USD,DOGE-USD")
     .split(",").map((s) => s.trim()).filter(Boolean);
 }
 /** When set (e.g. "Crypto"), Polymarket snapshots filter to events tagged
@@ -44,13 +46,56 @@ function recordCoinbaseSnapshot(s: {
   });
 }
 
+/**
+ * Short-binary universe controls. ARENA_SHORT_BINARIES=0 disables the fetch.
+ * ARENA_SHORT_BINARY_TAGS=5M,15M (CSV) picks which Polymarket tag(s) to pull.
+ * ARENA_SHORT_BINARY_ASSETS=BTC,ETH,SOL,XRP,DOGE filters to specific assets
+ * (empty/unset = no filter).
+ */
+function shortBinariesEnabled(): boolean {
+  return (process.env.ARENA_SHORT_BINARIES ?? "1") !== "0";
+}
+function shortBinaryTags(): string[] {
+  return (process.env.ARENA_SHORT_BINARY_TAGS ?? "5M,15M")
+    .split(",").map((s) => s.trim()).filter(Boolean);
+}
+function shortBinaryAssetFilter(): BinaryAsset[] | undefined {
+  const raw = (process.env.ARENA_SHORT_BINARY_ASSETS ?? "").trim();
+  if (!raw) return undefined;
+  return raw.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean) as BinaryAsset[];
+}
+
 export type SnapshotPassResult = {
   poly_count: number;
   coinbase_count: number;
   candle_count: number;
+  short_binaries_count: number;
+  short_binaries_by_asset: Record<string, number>;
   latency_ms: number;
   errors: string[];
 };
+
+/** Insert OKX 1-min candles into coindesk_candles with market='okx'. The
+ *  table's UNIQUE(market, instrument, granularity, start_unix) constraint
+ *  makes this idempotent — running every tick just merges new bars. */
+function recordOkxCandles(instId: string, rows: Array<{ ts_unix: number; open: number; high: number; low: number; close: number; volume: number }>): number {
+  if (!rows || rows.length === 0) return 0;
+  const stmt = db().prepare(
+    `INSERT OR IGNORE INTO coindesk_candles
+       (market, instrument, granularity, start_unix, open, high, low, close, volume, quote_volume, total_trades)
+     VALUES ('okx', ?, 'ONE_MINUTE', ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+  );
+  const insert = db().transaction((arr: typeof rows) => {
+    let n = 0;
+    for (const r of arr) {
+      if (!Number.isFinite(r.ts_unix) || !Number.isFinite(r.close)) continue;
+      const res = stmt.run(instId, r.ts_unix, r.open, r.high, r.low, r.close, r.volume ?? 0);
+      if ((res.changes ?? 0) > 0) n += 1;
+    }
+    return n;
+  });
+  return insert(rows);
+}
 
 /** Insert candles, ignoring rows that already exist for (product, gran, start). */
 function recordCoinbaseCandles(productId: string, candles: Array<{ start: string; low: string; high: string; open: string; close: string; volume: string }>): number {
@@ -208,10 +253,50 @@ export async function runSnapshotPass(opts: { polyLimit?: number; cbProducts?: s
     }
   }
 
+  // OKX 1-min candles for BNB-USDT and HYPE-USDT — Coinbase doesn't list
+  // these, and Binance is geoblocked from US IPs, so OKX is our feed. We
+  // write into `coindesk_candles` with market='okx' and union via
+  // loadRecentCandles when a strategy requests candles for those assets.
+  const okxFeeds = (process.env.ARENA_OKX_PRODUCTS ?? "BNB-USDT,HYPE-USDT")
+    .split(",").map((s) => s.trim()).filter(Boolean);
+  for (const instId of okxFeeds) {
+    try {
+      const candles = await okx.publicGetCandles(instId, { bar: "1m", limit: candleWindowMin + 5 });
+      const n = recordOkxCandles(instId, candles);
+      candleCount += n;
+    } catch (err) {
+      errors.push(`okx candles[${instId}]: ${(err as Error).message}`);
+    }
+  }
+
+  // Short-duration BTC/ETH/SOL/XRP/DOGE Up-or-Down binaries. These are the
+  // 5-min and 15-min hourly markets the sampling-markets endpoint never
+  // surfaces. Persists both the snapshot row (so the sim sees them in
+  // ctx.snapshots) and the per-token metadata (expiry, asset) the resolver
+  // needs to settle positions when the binary closes.
+  let shortBinariesCount = 0;
+  let shortBinariesByAsset: Record<string, number> = {};
+  if (shortBinariesEnabled()) {
+    try {
+      const sb = await fetchShortBinaries({
+        limit: 40,
+        tags: shortBinaryTags(),
+        assetFilter: shortBinaryAssetFilter(),
+      });
+      shortBinariesCount = sb.markets_recorded;
+      shortBinariesByAsset = sb.by_asset;
+      for (const e of sb.errors) errors.push(`short-binaries: ${e}`);
+    } catch (err) {
+      errors.push(`short-binaries: ${(err as Error).message}`);
+    }
+  }
+
   return {
     poly_count: polyCount,
     coinbase_count: cbCount,
     candle_count: candleCount,
+    short_binaries_count: shortBinariesCount,
+    short_binaries_by_asset: shortBinariesByAsset,
     latency_ms: Date.now() - t0,
     errors,
   };

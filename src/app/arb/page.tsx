@@ -152,7 +152,7 @@ export default async function ArbPage({ searchParams }: { searchParams: Promise<
             <tbody>
               {events.slice(0, 20).map((e) => {
                 const p = (() => { try { return JSON.parse(e.payload_json); } catch { return {}; } })();
-                const cost = p?.cost_usd ?? p?.planned?.yes?.sizeUsd && p?.planned?.no?.sizeUsd ? (p.planned.yes.sizeUsd + p.planned.no.sizeUsd) : null;
+                const cost = p?.cost_usd ?? ((p?.planned?.yes?.sizeUsd && p?.planned?.no?.sizeUsd) ? (p.planned.yes.sizeUsd + p.planned.no.sizeUsd) : null);
                 return (
                   <tr key={e.id}>
                     <td className="text-xs text-zinc-500 whitespace-nowrap">{e.created_at?.slice(11, 19)}</td>

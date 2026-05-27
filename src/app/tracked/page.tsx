@@ -72,9 +72,23 @@ export default async function TrackedPage() {
                 </td>
                 <td>
                   {r.proxy_wallet ? (
-                    <a className="font-mono text-xs text-accent-blue hover:underline" href={`https://polygonscan.com/address/${r.proxy_wallet}`} target="_blank" rel="noopener noreferrer">
-                      {r.proxy_wallet.slice(0, 8)}…{r.proxy_wallet.slice(-4)}
-                    </a>
+                    <div className="flex flex-col gap-0.5">
+                      <Link
+                        href={`/wallets/${r.proxy_wallet}`}
+                        className="font-mono text-xs text-accent-blue hover:underline"
+                        title="open fingerprint view"
+                      >
+                        {r.proxy_wallet.slice(0, 8)}…{r.proxy_wallet.slice(-4)}
+                      </Link>
+                      <a
+                        className="text-[10px] text-zinc-500 hover:text-zinc-300"
+                        href={`https://polygonscan.com/address/${r.proxy_wallet}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        polygonscan ↗
+                      </a>
+                    </div>
                   ) : <span className="text-xs text-zinc-500">—</span>}
                 </td>
               </tr>

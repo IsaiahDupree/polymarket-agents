@@ -24,6 +24,9 @@ export function makeMemoryDb(): Database.Database {
   ensureColumn(db, "paper_generations", "tick_count", "tick_count INTEGER NOT NULL DEFAULT 0");
   ensureColumn(db, "capsules", "paper_agent_id", "paper_agent_id INTEGER REFERENCES paper_agents(id)");
   ensureColumn(db, "paper_agents", "entries_count", "entries_count INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "paper_agents", "is_elite", "is_elite INTEGER NOT NULL DEFAULT 0");
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_paper_agents_elite ON paper_agents(is_elite, alive);`);
+  ensureColumn(db, "poly_binaries", "event_slug", "event_slug TEXT");
   ensureColumn(db, "market_snapshots", "category", "category TEXT");
   db.exec(`
     CREATE TABLE IF NOT EXISTS realtime_ticks (

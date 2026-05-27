@@ -236,13 +236,42 @@ CREATE TABLE IF NOT EXISTS coindesk_candles (
 CREATE INDEX IF NOT EXISTS idx_cd_candles_inst_start ON coindesk_candles(instrument, granularity, start_unix DESC);
 CREATE INDEX IF NOT EXISTS idx_cd_candles_market ON coindesk_candles(market, instrument);
 
--- Links a Polymarket market (condition_id) to a Coinbase product_id for paired
--- pricing / cross-venue arb. Many-to-many handled via separate rows.
+-- Sidecar metadata for short-duration Polymarket binaries (5-min / 15-min Up
+-- or Down events). The base market_snapshots table records the YES token's
+-- midpoint each tick; this table holds the per-token info that doesn't change
+-- during the market's life: which crypto, when it expires, whether it has
+-- settled. The arena resolver consults this to force-close positions when the
+-- market resolves.
+CREATE TABLE IF NOT EXISTS poly_binaries (
+  token_id          TEXT PRIMARY KEY,             -- Polymarket CLOB token id (YES side)
+  condition_id      TEXT NOT NULL,
+  no_token_id       TEXT,                          -- NO side token id (for SELL → buy-NO equivalence)
+  question          TEXT NOT NULL,
+  asset             TEXT NOT NULL,                 -- BTC | ETH | SOL | XRP | DOGE | BNB | HYPE | UNKNOWN
+  duration_kind     TEXT NOT NULL DEFAULT '5M',    -- '5M' | '15M' | other tag observed
+  start_iso         TEXT,                          -- event.startDate
+  expiry_iso        TEXT NOT NULL,                 -- event.endDate (when binary settles)
+  reference_price   REAL,                          -- baseline price at start, set by resolver
+  settled           INTEGER NOT NULL DEFAULT 0,
+  outcome_yes       INTEGER,                       -- 1=YES, 0=NO (only set when settled)
+  resolved_at       TEXT,
+  created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_poly_binaries_expiry ON poly_binaries(settled, expiry_iso);
+CREATE INDEX IF NOT EXISTS idx_poly_binaries_asset ON poly_binaries(asset, expiry_iso);
+
+-- Links a Polymarket market (condition_id) to a sister-venue symbol for paired
+-- pricing / cross-venue arb. Either coinbase_product_id OR kalshi_ticker (or
+-- both, for triangle setups) identifies the other venue. Many-to-many handled
+-- via separate rows. NB: existing installs are upgraded by the runtime
+-- migration in src/lib/db/client.ts which ADDs the kalshi_ticker column.
 CREATE TABLE IF NOT EXISTS cross_venue_arbs (
   id                       INTEGER PRIMARY KEY AUTOINCREMENT,
   poly_condition_id        TEXT NOT NULL,
   poly_question            TEXT,
-  coinbase_product_id      TEXT NOT NULL,
+  coinbase_product_id      TEXT,                       -- nullable when pairing is Polymarket↔Kalshi only
+  kalshi_ticker            TEXT,                       -- e.g. KXBTC15M-25MAY26-1745-T120000
   pairing_kind             TEXT NOT NULL,             -- 'price_threshold' | 'event_outcome' | 'hedge' | 'pure_arb'
   threshold_value          REAL,                       -- e.g., for 'BTC > $X' markets, X (in USD)
   threshold_direction      TEXT,                       -- 'gt' | 'gte' | 'lt' | 'lte'
@@ -252,9 +281,13 @@ CREATE TABLE IF NOT EXISTS cross_venue_arbs (
   rationale                TEXT,
   active                   INTEGER NOT NULL DEFAULT 1,
   created_at               TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE(poly_condition_id, coinbase_product_id, pairing_kind)
+  CHECK (coinbase_product_id IS NOT NULL OR kalshi_ticker IS NOT NULL),
+  UNIQUE(poly_condition_id, coinbase_product_id, kalshi_ticker, pairing_kind)
 );
 CREATE INDEX IF NOT EXISTS idx_cross_venue_active ON cross_venue_arbs(active, poly_condition_id);
+-- idx_cross_venue_kalshi is created in src/lib/db/client.ts runLightMigrations()
+-- because existing DBs need ALTER TABLE ADD COLUMN to run BEFORE any index that
+-- references the new column. Keeping it out of schema.sql avoids ordering bugs.
 
 -- ============================================================================
 -- Capsules — per-agent risk envelopes (pattern from TradingBot/src/capsules)
@@ -365,6 +398,12 @@ CREATE TABLE IF NOT EXISTS paper_agents (
   entries_count            INTEGER NOT NULL DEFAULT 0,           -- bumps on ENTRY; fitness activity bonus reads this
   wins_count               INTEGER NOT NULL DEFAULT 0,
   alive                    INTEGER NOT NULL DEFAULT 1,           -- 1=alive, 0=retired
+  -- Elite preservation: when 1, evolve() will NOT retire this agent at seal
+  -- time even if a younger generation outranks it. Top-N (ARENA_ELITE_COUNT,
+  -- default 5) alive-across-all-gens are promoted each seal; elites whose
+  -- drawdown from peak crosses ARENA_ELITE_MAX_DD_PCT lose the flag and
+  -- re-enter the normal cull pool. Set explicitly by evolve.ts; never by hand.
+  is_elite                 INTEGER NOT NULL DEFAULT 0,
   retire_reason            TEXT,
   retired_at               TEXT,
   created_at               TEXT NOT NULL DEFAULT (datetime('now')),
@@ -372,6 +411,8 @@ CREATE TABLE IF NOT EXISTS paper_agents (
 );
 CREATE INDEX IF NOT EXISTS idx_paper_agents_gen_alive ON paper_agents(generation, alive);
 CREATE INDEX IF NOT EXISTS idx_paper_agents_parent ON paper_agents(parent_paper_agent_id);
+-- idx_paper_agents_elite created in runLightMigrations() after the column is
+-- ensured via ALTER TABLE on existing DBs.
 
 -- One row per simulated trade — entries and exits both. Realized PnL on exits.
 -- `venue` is sim-only ('sim-poly' | 'sim-coinbase') so this table never gets
@@ -524,7 +565,78 @@ CREATE TABLE IF NOT EXISTS copy_backtest_resolved (
   trades_used              INTEGER NOT NULL,
   trades_skipped_unresolved INTEGER NOT NULL,
   trades_skipped_no_token_match INTEGER NOT NULL,
+  trades_after_dedup       INTEGER,                 -- post slug-collapse trade count
+  distinct_markets_used    INTEGER,                 -- distinct resolved markets in scoring
+  verdict_rating           TEXT,                    -- insufficient_data | loss | marginal | profitable
+  verdict_reason           TEXT,
   notes_json               TEXT,
   created_at               TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_copy_resolved_wallet_run ON copy_backtest_resolved(wallet_address, run_id);
+
+-- Consensus-signal backtest — settles each historical consensus signal against
+-- the resolved outcome of its market. Tests the platform thesis: do
+-- "≥N tracked wallets agree" signals actually pay off, or is it noise?
+CREATE TABLE IF NOT EXISTS consensus_backtest_results (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id              TEXT NOT NULL,
+  slippage_bps        INTEGER NOT NULL,
+  n_signals           INTEGER NOT NULL,
+  n_wins              INTEGER NOT NULL,
+  win_rate            REAL NOT NULL,
+  pnl_usd             REAL NOT NULL,
+  pnl_pct             REAL NOT NULL,
+  avg_winner_multiple REAL NOT NULL,
+  size_usd            REAL NOT NULL,
+  fee_bps             INTEGER NOT NULL,
+  signals_seen        INTEGER NOT NULL,
+  signals_used        INTEGER NOT NULL,
+  signals_skipped_unresolved INTEGER NOT NULL,
+  signals_skipped_indecipherable INTEGER NOT NULL,
+  verdict_rating      TEXT,
+  verdict_reason      TEXT,
+  n_distinct_signals  INTEGER,
+  config_json         TEXT,    -- consensus producer config used (min_wallets, window_min, etc.)
+  notes_json          TEXT,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_consensus_backtest_run ON consensus_backtest_results(run_id);
+
+-- Retroactive consensus — uses /closed-positions instead of /trades. Every
+-- signal here is by definition on a resolved market, so we can settle copy
+-- PnL immediately without waiting on resolution.
+CREATE TABLE IF NOT EXISTS retroactive_consensus_signals (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id              TEXT NOT NULL,
+  condition_id        TEXT NOT NULL,
+  market_title        TEXT,
+  outcome_index       INTEGER NOT NULL,
+  outcome             TEXT,
+  won                 INTEGER NOT NULL,
+  wallet_count        INTEGER NOT NULL,
+  combined_trust      INTEGER NOT NULL,
+  combined_usd        REAL NOT NULL,
+  consensus_avg_price REAL NOT NULL,
+  wallets_json        TEXT NOT NULL,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_retro_signals_run ON retroactive_consensus_signals(run_id);
+
+CREATE TABLE IF NOT EXISTS retroactive_consensus_buckets (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id              TEXT NOT NULL,
+  slippage_bps        INTEGER NOT NULL,
+  n_signals           INTEGER NOT NULL,
+  n_wins              INTEGER NOT NULL,
+  win_rate            REAL NOT NULL,
+  pnl_usd             REAL NOT NULL,
+  pnl_pct             REAL NOT NULL,
+  avg_winner_multiple REAL NOT NULL,
+  size_usd            REAL NOT NULL,
+  verdict_rating      TEXT,
+  verdict_reason      TEXT,
+  n_distinct_signals  INTEGER,
+  config_json         TEXT,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_retro_buckets_run ON retroactive_consensus_buckets(run_id);

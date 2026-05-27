@@ -11,11 +11,12 @@
  */
 import { db } from "@/lib/db/client";
 import { insertEvolutionEvent } from "@/lib/db/queries";
-import { partitionSurvivors, rankAgents } from "./score";
+import { partitionSurvivors, rankAgents, scoreAgent } from "./score";
 import { buildLiveTickContext } from "./context";
 import {
-  getCurrentGeneration, getPaperAgent, insertPaperAgent, insertPaperTrade,
-  listAliveAgentsForGen, listGenerations, persistAgentTick, recordChampionship,
+  demoteElite, getCurrentGeneration, getPaperAgent, insertPaperAgent, insertPaperTrade,
+  listAliveAgentsAcrossGens, listAliveAgentsForGen, listAliveElites, listGenerations,
+  markElite, persistAgentTick, recordChampionship,
   retireAgent, sealGeneration, setGenerationAgentCount, startGeneration, toLiveAgent,
 } from "./db";
 import { genomeNickname, parseGenome, type Genome } from "./genome";
@@ -23,6 +24,9 @@ import { mutate, mutateLlm, mutateProgrammatic } from "./mutate";
 import { computeReplayFitness } from "./replay-fitness";
 import { aggressivePresets } from "./seed-presets";
 import { applySignal, markToMarket } from "./sim";
+import { runAutoPromote } from "./auto-promote";
+import { runCircuitBreaker } from "@/lib/capsules/circuit-breaker";
+import { getBinaryMeta } from "./short-binaries";
 import type { LiveAgent, PaperAgentRow, TickContext } from "./types";
 
 /**
@@ -46,8 +50,64 @@ function realizeOpenPositions(row: PaperAgentRow, ctx: TickContext, generation: 
   // Snapshot the list of market_ids first — applySignal mutates agent.positions.
   const marketIds = agent.positions.map((p) => p.market_id);
   for (const mid of marketIds) {
+    const pos = agent.positions.find((p) => p.market_id === mid);
+    if (!pos) continue;
+
+    // 2026-05-26 bug-fix: Binary positions must NOT be force-closed at the
+    // snapshot mid. The mid (usually still equal to the entry price) hides
+    // the true outcome — if the binary already settled YES/NO, we'd be
+    // robbing the agent of the resolution PnL. Three sub-cases:
+    //
+    //   (a) Binary is settled        → settle at the actual 0/1 outcome
+    //                                  (mirrors binary-resolver math)
+    //   (b) Binary expired, not yet
+    //       settled                  → skip — let the resolver handle it on
+    //                                  a future tick. Agent gets retired
+    //                                  but resolver still pays out (it
+    //                                  iterates listAliveAgentsAcrossGens
+    //                                  which excludes retired agents — so
+    //                                  this case needs follow-up to credit
+    //                                  retired agents too).
+    //   (c) Binary not yet expired   → leave the position open for now (sim
+    //                                  fitness will reflect mark-to-market;
+    //                                  resolver will settle when expiry
+    //                                  arrives). Same risk as (b).
+    const binary = getBinaryMeta(mid);
+    if (binary) {
+      if (binary.settled && binary.outcome_yes != null) {
+        const resolvedPrice = binary.outcome_yes === 1 ? 1.0 : 0.0;
+        // SELL is BUY-NO-equivalent (bounded loss) — matches sim.ts applySignal
+        // and binary-resolver. Pre-2026-05-26: unbounded short math.
+        const shareRet = pos.side === "BUY"
+          ? (resolvedPrice - pos.entry_price) / pos.entry_price
+          : (pos.entry_price - resolvedPrice) / (1 - pos.entry_price);
+        const realized_one = pos.size_usd * shareRet;
+        agent.cash_usd_current += pos.size_usd + realized_one;
+        agent.realized_pnl_usd += realized_one;
+        agent.trades_count += 1;
+        if (realized_one > 0) agent.wins_count += 1;
+        const idx = agent.positions.findIndex((p) => p.market_id === mid);
+        if (idx !== -1) agent.positions.splice(idx, 1);
+        insertPaperTrade({
+          paper_agent_id: agent.id, venue: pos.venue, market_id: pos.market_id,
+          side: pos.side === "BUY" ? "SELL" : "BUY", intent: "exit",
+          price: resolvedPrice, size_usd: pos.size_usd, fee_usd: 0,
+          realized_pnl_usd: realized_one, linked_entry_id: pos.entry_trade_id ?? null,
+          signal_rationale: `force-close-at-binary-outcome ${binary.asset} ${binary.outcome_yes === 1 ? "UP" : "DOWN"}`,
+          tick_at: ctx.now, generation,
+        });
+        closed += 1;
+        realized += realized_one;
+      }
+      // (b) and (c): skip — leave open. Resolver picks them up post-expiry.
+      // The agent gets retired with these positions still in the basket;
+      // operator can audit via the trade log.
+      continue;
+    }
+
+    // Non-binary position: existing behavior — close at snapshot mid.
     if (!ctx.snapshots.has(mid)) continue;
-    const res = applySignal(agent, { kind: "exit", venue: agent.positions.find((p) => p.market_id === mid)!.venue, market_id: mid, rationale: "force-close on retire" }, ctx, generation);
+    const res = applySignal(agent, { kind: "exit", venue: pos.venue, market_id: mid, rationale: "force-close on retire" }, ctx, generation);
     if (res.trade) {
       insertPaperTrade(res.trade);
       closed += 1;
@@ -104,11 +164,29 @@ export type EvolveResult = {
   top_paper_agent_id: number | null;
   top_score: number | null;
   championship_recorded: boolean;
+  /** Null when ALLOW_AUTO_PROMOTE != 1 or no qualifying elites; otherwise
+   *  summary of the auto-promote pass that ran after the seal. */
+  auto_promote: {
+    qualified_agents: number;
+    promoted_count: number;
+    paused_count: number;
+    per_capsule_usd: number;
+  } | null;
+  /** Capsule circuit-breaker summary from this seal — see circuit-breaker.ts. */
+  circuit_breaker: {
+    inspected: number;
+    paused: number;
+  };
 } | { skipped: "no_open_generation" } | { skipped: "no_alive_agents"; sealed_gen: number };
 
-export async function runEvolveOnce(opts: { survivalPct?: number; championshipGens?: number } = {}): Promise<EvolveResult> {
+export async function runEvolveOnce(opts: { survivalPct?: number; championshipGens?: number; eliteCount?: number; eliteMaxDdPct?: number } = {}): Promise<EvolveResult> {
   const survivalPct = opts.survivalPct ?? Number(process.env.ARENA_SURVIVAL_PCT ?? "0.5");
   const championshipGens = opts.championshipGens ?? Number(process.env.ARENA_CHAMPION_GENS ?? "3");
+  // Elite preservation params. Top-N alive agents across every generation
+  // are protected from retirement; elites whose drawdown exceeds the cap
+  // get demoted (alive, eligible for normal cull next time).
+  const eliteCount = opts.eliteCount ?? Number(process.env.ARENA_ELITE_COUNT ?? "5");
+  const eliteMaxDdPct = opts.eliteMaxDdPct ?? Number(process.env.ARENA_ELITE_MAX_DD_PCT ?? "0.20");
 
   const gen = getCurrentGeneration();
   if (!gen) return { skipped: "no_open_generation" };
@@ -120,19 +198,72 @@ export async function runEvolveOnce(opts: { survivalPct?: number; championshipGe
     return { skipped: "no_alive_agents", sealed_gen: gen.gen_number };
   }
 
+  // -- ELITE PRESERVATION --
+  // 1. Demote existing elites that exceeded the drawdown cap. They stay alive
+  //    but lose their cull-immunity for the next round.
+  // 2. Promote the top-N alive agents across every gen by fitness. Eliteship
+  //    is recomputed each seal — yesterday's elite can be replaced.
+  const currentElites = listAliveElites();
+  const demoted: number[] = [];
+  for (const el of currentElites) {
+    const s = scoreAgent(el);
+    if (s.max_dd_pct > eliteMaxDdPct) {
+      demoteElite(el.id);
+      demoted.push(el.id);
+    }
+  }
+  const allAlive = listAliveAgentsAcrossGens();
+  const rankedAll = rankAgents(allAlive);
+  // Require trades_count > 0 — an agent that opens positions but never closes
+  // them (e.g. long-duration fade-spike whose time_stop_h spans many gen
+  // seals) racks up entries but produces no resolved PnL. Such agents would
+  // dominate the leaderboard via the activity bonus while contributing
+  // nothing real. Closed round-trips = proof the strategy actually works.
+  const newElites = rankedAll
+    .filter((r) => r.agent.trades_count > 0)
+    .slice(0, eliteCount);
+  const promoted: number[] = [];
+  const demotedSet = new Set(demoted);
+  for (const e of newElites) {
+    // Don't re-promote an agent we just demoted in this same seal — it would
+    // defeat the drawdown protection. Give it at least one cycle off.
+    if (demotedSet.has(e.agent.id)) continue;
+    if (!e.agent.is_elite) {
+      markElite(e.agent.id);
+      promoted.push(e.agent.id);
+    }
+  }
+  // Anyone who WAS elite but is no longer in the new top-N (and wasn't already
+  // demoted above) — demote without retiring.
+  const newEliteIds = new Set(newElites.map((e) => e.agent.id));
+  for (const el of currentElites) {
+    if (demotedSet.has(el.id)) continue;
+    if (!newEliteIds.has(el.id)) {
+      demoteElite(el.id);
+      demoted.push(el.id);
+    }
+  }
+  // Final set of elites for this seal — used below to exclude from cull.
+  const eliteIds = new Set(newElites.filter((e) => !demotedSet.has(e.agent.id)).map((e) => e.agent.id));
+
   // Force zero-activity agents into the cull bucket regardless of where they
   // rank. A lineage that never acted produces no fitness signal and just
   // dilutes the gene pool with cautious genomes that never trade. See PRD
   // `arena-agent-decision-framework.md` §6.1.R1.3.
-  const activeRanked = ranked.filter((r) => r.agent.entries_count > 0);
-  const inactiveRanked = ranked.filter((r) => r.agent.entries_count === 0);
+  //
+  // Elites are removed from ALL partition pools — they aren't culled, aren't
+  // counted as survivors-needing-mutation, and they don't retire. They just
+  // continue trading across the gen boundary.
+  const activeRanked = ranked.filter((r) => r.agent.entries_count > 0 && !eliteIds.has(r.agent.id));
+  const inactiveRanked = ranked.filter((r) => r.agent.entries_count === 0 && !eliteIds.has(r.agent.id));
   const { survivors, cull } = partitionSurvivors(activeRanked, survivalPct);
   const inactiveCull = inactiveRanked;  // every zero-entry agent is culled
 
   // Force-close any open positions on agents being retired so their final
   // fitness reflects MtM-at-seal rather than leaving positions orphaned on a
   // dead row. Refresh the ranking afterward so sealGeneration's `top_score`
-  // sees the realized state.
+  // sees the realized state. Elites are EXCLUDED — their open positions must
+  // survive the gen boundary because they keep trading next gen.
   const ctx = buildLiveTickContext();
   let totalClosed = 0;
   for (const r of [...cull, ...survivors, ...inactiveCull]) {
@@ -256,14 +387,18 @@ export async function runEvolveOnce(opts: { survivalPct?: number; championshipGe
 
   setGenerationAgentCount(nextGenId, newIds.length);
 
+  const eliteSummary = eliteIds.size > 0
+    ? ` · ${eliteIds.size} elite${eliteIds.size === 1 ? "" : "s"} preserved (top-${eliteCount})`
+    : "";
   insertEvolutionEvent({
     event_type: "arena-evolve",
-    summary: `gen${gen.gen_number} sealed — top fitness ${topAfterClose.score.fitness.toFixed(4)} by ${topAfterClose.agent.name}; bred ${newIds.length} into gen${nextGen}` + (totalClosed > 0 ? ` (force-closed ${totalClosed} open positions)` : "") + (inactiveCull.length > 0 ? ` · ${inactiveCull.length} no-activity culled` : ""),
+    summary: `gen${gen.gen_number} sealed — top fitness ${topAfterClose.score.fitness.toFixed(4)} by ${topAfterClose.agent.name}; bred ${newIds.length} into gen${nextGen}` + (totalClosed > 0 ? ` (force-closed ${totalClosed} open positions)` : "") + (inactiveCull.length > 0 ? ` · ${inactiveCull.length} no-activity culled` : "") + eliteSummary,
     payload_json: JSON.stringify({
       from_gen: gen.gen_number, to_gen: nextGen,
       top_agent_id: topAfterClose.agent.id, top_score: topAfterClose.score.fitness,
       n_survivors: survivors.length, n_culled: cull.length, n_inactive_culled: inactiveCull.length,
       n_children: newIds.length, force_closed_positions: totalClosed,
+      elites_promoted: promoted, elites_demoted: demoted, elite_ids: [...eliteIds],
     }),
   });
 
@@ -299,6 +434,17 @@ export async function runEvolveOnce(opts: { survivalPct?: number; championshipGe
     }
   }
 
+  // Circuit-breaker: auto-pause capsules with runaway broker errors. Runs
+  // BEFORE auto-promote so a freshly-tripped capsule isn't immediately
+  // re-promoted in the same seal. Bug-fix #14 (2026-05-26).
+  const breaker = runCircuitBreaker();
+
+  // Auto-promote top-N elites to live capsules (no-op unless
+  // ALLOW_AUTO_PROMOTE=1 + ARENA_LIVE_CAPITAL_TOTAL_USD set). Logs to
+  // evolution_log internally. Runs AFTER seal so elite status reflects the
+  // just-promoted top-N.
+  const autoPromote = runAutoPromote();
+
   return {
     sealed_gen: gen.gen_number,
     next_gen: nextGen,
@@ -308,5 +454,15 @@ export async function runEvolveOnce(opts: { survivalPct?: number; championshipGe
     top_paper_agent_id: topAfterClose.agent.id,
     top_score: topAfterClose.score.fitness,
     championship_recorded: championshipRecorded,
+    auto_promote: autoPromote.skipped ? null : {
+      qualified_agents: autoPromote.qualified_agents,
+      promoted_count: autoPromote.promoted.length,
+      paused_count: autoPromote.paused.length,
+      per_capsule_usd: autoPromote.per_capsule_usd,
+    },
+    circuit_breaker: {
+      inspected: breaker.inspected,
+      paused: breaker.paused.length,
+    },
   };
 }

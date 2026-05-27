@@ -19,6 +19,27 @@ export type Position = {
   target_price?: number;
   stop_price?: number;
   time_stop_at?: string;
+  // ----------------------------------------------------------------------
+  // Live-routing audit trail.
+  // ----------------------------------------------------------------------
+  // When the live capsule path actually filled an order on Polymarket (or
+  // Coinbase), we capture which token/product was filled, the actual shares
+  // executed, and the broker order id. The arena sim's `market_id` records
+  // the genome's *intent* (always the YES token for binaries); these fields
+  // record the *execution* (could be the NO token if SELL→BUY-NO swapped).
+  // Used by:
+  //   - resolveBinary to compute live-side PnL using actual fill data
+  //   - live EXIT path to know which token to SELL
+  //   - reconciler to match CLOB fills to arena positions
+  live_token_id?: string;         // actual filled token (= market_id, or NO token)
+  live_filled_shares?: number;    // actual shares filled (post-FOK)
+  live_paid_usd?: number;         // notional paid (could differ from size_usd)
+  live_broker_order_id?: string;
+  /** The clientOrderId we submitted. Stored alongside broker_order_id so the
+   *  reconciler can match by either field — CLOB's /data/trades response may
+   *  expose the broker's internal id under a different field on different SDK
+   *  versions, and client_order_id is the one we control. */
+  live_client_order_id?: string;
 };
 
 /** A genome's belief about the true probability of the YES outcome (sim-poly
@@ -85,6 +106,9 @@ export type PaperAgentRow = {
   entries_count: number;
   wins_count: number;
   alive: 0 | 1;
+  /** When 1, evolve() will not retire this agent at seal time even if outranked.
+   *  See `runEvolveOnce` in evolve.ts + ARENA_ELITE_COUNT/ARENA_ELITE_MAX_DD_PCT. */
+  is_elite: 0 | 1;
   retire_reason: string | null;
   retired_at: string | null;
   created_at: string;

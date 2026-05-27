@@ -24,7 +24,9 @@ import { checkBudget } from "./llm-oracle-budget";
 const OracleResponse = z.object({
   probability: z.number().min(0).max(1),
   confidence: z.enum(["high", "medium", "low"]),
-  reasoning: z.string().max(400),
+  // Bumped from 400 → 1000 (2026-05-26): haiku-4-5 routinely writes
+  // 400-500 char reasonings; the prior cap was rejecting valid responses.
+  reasoning: z.string().max(1000),
 });
 export type OracleResult = z.infer<typeof OracleResponse>;
 
@@ -72,6 +74,33 @@ function cacheHit(key: string, ttlMin: number): OracleResult | null {
 }
 
 export type OracleErrorKind = "rate_limit" | "auth" | "parse" | "transport" | "unknown";
+
+/**
+ * Module-scope cooldown: when the API returns 429 we record the timestamp and
+ * refuse subsequent live calls for `cooldownMin` minutes. Cache hits still
+ * serve. Default 30 min is conservative for Claude Max session limits; tune
+ * via ARENA_LLM_ORACLE_RATE_LIMIT_COOLDOWN_MIN.
+ *
+ * This keeps the tick loop from burning hundreds of doomed API attempts when
+ * an account hits its 5-hour usage cap or a per-minute spike limit.
+ */
+let lastRateLimitMs = 0;
+function cooldownMin(): number {
+  return Number(process.env.ARENA_LLM_ORACLE_RATE_LIMIT_COOLDOWN_MIN ?? "30");
+}
+function rateLimitedUntilMs(): number {
+  return lastRateLimitMs + cooldownMin() * 60_000;
+}
+export function isRateLimitCoolingDown(): boolean {
+  return Date.now() < rateLimitedUntilMs();
+}
+/** Test-only — reset the cooldown clock between cases. */
+export function _resetRateLimitCooldown(): void { lastRateLimitMs = 0; }
+/** Operator surface — minutes remaining until the next live call is allowed. */
+export function rateLimitMinRemaining(): number {
+  const ms = rateLimitedUntilMs() - Date.now();
+  return ms <= 0 ? 0 : ms / 60_000;
+}
 
 function logCall(args: {
   model: string; promptVersion: string; marketId: string;
@@ -169,6 +198,11 @@ export async function callOracle(args: CallOracleArgs): Promise<OracleResult | n
     return null;
   }
 
+  // 2b. Rate-limit cooldown — after a 429 we sit out for N minutes so the
+  // tick loop doesn't waste API calls (and risk pushing the account further
+  // into rate-limit purgatory).
+  if (isRateLimitCoolingDown()) return null;
+
   // 3. Auth.
   if (!authIsAvailable()) return null;
 
@@ -178,7 +212,11 @@ export async function callOracle(args: CallOracleArgs): Promise<OracleResult | n
     const client = await getOAuthClient();
     const resp = await client.messages.create({
       model,
-      max_tokens: 200,
+      // Bumped to 400 from 200 (2026-05-26): haiku-4-5 was hitting the cap and
+      // truncating the JSON output, producing 100% parse failures. The
+      // OracleResponse schema requires `probability` + `confidence` + `reasoning`
+      // (≤ 400 chars) — typical generation runs 150-300 output tokens.
+      max_tokens: 400,
       system: SYSTEM_PROMPT_V1,
       messages: [{ role: "user", content: userPrompt }],
     });
@@ -213,11 +251,16 @@ export async function callOracle(args: CallOracleArgs): Promise<OracleResult | n
     // Audit F3 — log every failure with a classified error_kind so the
     // operator can SELECT * FROM llm_call_log WHERE error_kind IS NOT NULL
     // and see what's broken. cost_usd = 0 because no tokens were billed.
+    const errorKind = classifyError(e);
+    // Trip the cooldown timer on 429s so subsequent ticks back off instead
+    // of hammering the API. Other errors don't trigger cooldown — a transient
+    // network blip shouldn't lock us out for half an hour.
+    if (errorKind === "rate_limit") lastRateLimitMs = Date.now();
     logCall({
       model, promptVersion, marketId: args.marketId,
       inputTokens: 0, outputTokens: 0, cost_usd: 0,
       callerAgentId: args.callerAgentId, cacheHit: false, response: null,
-      errorKind: classifyError(e),
+      errorKind,
     });
     return null;
   }

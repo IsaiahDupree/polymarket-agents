@@ -76,9 +76,63 @@ export function persistAgentTick(agent: LiveAgent): void {
 }
 
 export function retireAgent(id: number, reason: string): void {
+  // Demote elite status if it was set — a retired agent can't be an elite.
   db().prepare(
-    `UPDATE paper_agents SET alive = 0, retire_reason = ?, retired_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
+    `UPDATE paper_agents SET alive = 0, is_elite = 0, retire_reason = ?, retired_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
   ).run(reason, id);
+}
+
+/** Promote an agent to elite status. Elites are protected from cull at seal
+ *  time and tick across generations. Idempotent — setting an already-elite
+ *  agent is a no-op. */
+export function markElite(id: number): void {
+  db().prepare(
+    `UPDATE paper_agents SET is_elite = 1, updated_at = datetime('now') WHERE id = ? AND alive = 1`,
+  ).run(id);
+}
+
+/** Demote an agent from elite status without retiring it. Used when an elite
+ *  exceeds the drawdown threshold but should remain alive and re-enter the
+ *  normal cull pool. */
+export function demoteElite(id: number): void {
+  db().prepare(
+    `UPDATE paper_agents SET is_elite = 0, updated_at = datetime('now') WHERE id = ?`,
+  ).run(id);
+}
+
+/** List all alive elites across every generation. Used by arena-tick so
+ *  preserved agents continue to receive ticks even after their birth gen
+ *  sealed. */
+export function listAliveElites(): PaperAgentRow[] {
+  return db().prepare(
+    `SELECT * FROM paper_agents WHERE alive = 1 AND is_elite = 1 ORDER BY id`,
+  ).all() as PaperAgentRow[];
+}
+
+/** Agents with a paper/live capsule binding. These MUST be ticked every
+ *  cycle regardless of generation or elite status — otherwise a real-money
+ *  capsule is bound to an agent that no longer fires signals. */
+export function listAliveAgentsWithLiveCapsule(): PaperAgentRow[] {
+  return db().prepare(
+    `SELECT pa.* FROM paper_agents pa
+       INNER JOIN capsules c ON c.paper_agent_id = pa.id
+      WHERE pa.alive = 1 AND c.status IN ('paper','live')
+      ORDER BY pa.id`,
+  ).all() as PaperAgentRow[];
+}
+
+/** Agents holding a position on the given token, regardless of alive status.
+ *  Used by the binary resolver so positions on retired agents still settle
+ *  correctly (previously these were stranded — a position opened on tick T,
+ *  the agent retired on tick T+1's seal, the binary expired on tick T+2,
+ *  but the resolver only iterated alive agents → position never paid out). */
+export function listAgentsHoldingPosition(marketId: string): PaperAgentRow[] {
+  return db().prepare(
+    `SELECT * FROM paper_agents
+      WHERE position_basket_json LIKE '%' || ? || '%'
+        AND (retired_at IS NULL OR retired_at > datetime('now', '-7 days'))
+      ORDER BY id`,
+  ).all(marketId) as PaperAgentRow[];
 }
 
 export function insertPaperTrade(t: Omit<PaperTradeRow, "id">): number {

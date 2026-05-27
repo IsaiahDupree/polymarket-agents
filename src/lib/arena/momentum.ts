@@ -21,6 +21,29 @@ export type Candle = {
 };
 
 /**
+ * Loads candles for an arbitrary (exchange, instrument) pair from
+ * `coindesk_candles` only (no Coinbase union). Used for OKX BNB/HYPE feeds
+ * and any other non-Coinbase venue we ingest. Returns oldest-first.
+ */
+export function loadRecentCandlesFromCoindesk(
+  market: string,
+  instrument: string,
+  lookbackMin = 60,
+  opts: { cutoffUnix?: number; granularity?: string } = {},
+): Candle[] {
+  const cutoff = opts.cutoffUnix ?? Math.floor(Date.now() / 1000);
+  const granularity = opts.granularity ?? "ONE_MINUTE";
+  const minStart = cutoff - lookbackMin * 60;
+  return db().prepare(
+    `SELECT instrument AS product_id, start_unix, open, high, low, close, volume
+       FROM coindesk_candles
+       WHERE market = ? AND instrument = ? AND granularity = ?
+         AND start_unix >= ? AND start_unix <= ?
+       ORDER BY start_unix ASC`,
+  ).all(market, instrument, granularity, minStart, cutoff) as Candle[];
+}
+
+/**
  * Loads recent candles for a product, UNIONING the live `coinbase_candles`
  * table with the historical-backfill `coindesk_candles` table.
  *

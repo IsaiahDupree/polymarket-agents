@@ -139,6 +139,35 @@ const PolyMarketMaker = z.object({
   entry_size_usd: num(1, 20),               // SMALL — MM is about volume
 }).strict();
 
+const PolyShortBinaryDirectional = z.object({
+  // Trades Polymarket's rolling 5-min "<asset> Up or Down" binaries by reading
+  // velocity off the matching Coinbase candle series. Enters during a window
+  // that's both LATE enough that velocity is informative and EARLY enough to
+  // be ahead of the 2-min cutoff. Time-stop = expiry; the resolver in
+  // binary-resolver.ts force-closes at the actual outcome.
+  /** Comma-separated list of allowed assets (BTC,ETH,SOL,XRP,DOGE). */
+  assets: z.string().min(2),
+  /** Window over which to compute velocity (1-min candles). */
+  vel_window_min: num(1, 5),
+  /** Minimum |velocity| to enter. 0.0005 = 0.05% per window. */
+  vel_entry_pct: pct(0.0001, 0.02),
+  /** Minimum minutes-to-expiry to enter (avoid the 2-min cutoff + slippage). */
+  pre_cutoff_min: num(2, 4),
+  /** Maximum minutes-to-expiry to enter. 8 covers 5-min binaries near the
+   *  start of their window; up to 16 supports the longer 15-min binaries. */
+  max_window_min: num(3, 16),
+  /** Cap on edge — refuse trades when the Polymarket YES price already
+   *  reflects our direction by more than this many points. */
+  max_yes_price_for_buy: pct(0.40, 0.85),
+  min_yes_price_for_sell: pct(0.15, 0.60),
+  entry_size_usd: num(1, 50),
+  /** Maximum concurrent open positions per underlying asset. Prevents the
+   *  strategy from stacking 7 BNB bets when consecutive 5-min binaries fire
+   *  signals before the first one resolves. Optional with default=1 so
+   *  pre-existing genome JSON in paper_agents keeps parsing. */
+  max_positions_per_asset: num(1, 4).default(1),
+}).strict();
+
 const LlmProbabilityOracle = z.object({
   // The "20-line Claude brain" from the Lunar article: AI estimates P_true,
   // EV+Kelly rail (P2) gates and resizes, deterministic execution. Inert by
@@ -179,6 +208,7 @@ export const SubGenomeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("wallet_copy_filtered"), params: WalletCopyFiltered }),
   z.object({ kind: z.literal("polymarket_market_maker"), params: PolyMarketMaker }),
   z.object({ kind: z.literal("llm_probability_oracle"), params: LlmProbabilityOracle }),
+  z.object({ kind: z.literal("poly_short_binary_directional"), params: PolyShortBinaryDirectional }),
 ]);
 
 export type SubGenome = z.infer<typeof SubGenomeSchema>;
@@ -210,6 +240,7 @@ export const GenomeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("wallet_copy_filtered"), params: WalletCopyFiltered }),
   z.object({ kind: z.literal("polymarket_market_maker"), params: PolyMarketMaker }),
   z.object({ kind: z.literal("llm_probability_oracle"), params: LlmProbabilityOracle }),
+  z.object({ kind: z.literal("poly_short_binary_directional"), params: PolyShortBinaryDirectional }),
   z.object({ kind: z.literal("multi_strategy"),       params: MultiStrategy }),
 ]);
 
@@ -228,6 +259,7 @@ export const GENOME_KINDS: GenomeKind[] = [
   "wallet_copy_filtered",
   "polymarket_market_maker",
   "llm_probability_oracle",
+  "poly_short_binary_directional",
   "multi_strategy",
 ];
 
@@ -318,6 +350,17 @@ const PARAM_BOUNDS: Record<GenomeKind, Record<string, [number, number] | string[
     cache_ttl_min: [5, 240],
     entry_size_usd: [5, 100],
   },
+  poly_short_binary_directional: {
+    // `assets` is an opaque CSV string — randomGenome below picks a default.
+    vel_window_min: [1, 5],
+    vel_entry_pct: [0.0001, 0.02],
+    pre_cutoff_min: [2, 4],
+    max_window_min: [3, 16],
+    max_yes_price_for_buy: [0.40, 0.85],
+    min_yes_price_for_sell: [0.15, 0.60],
+    entry_size_usd: [1, 50],
+    max_positions_per_asset: [1, 4],
+  },
 };
 
 export function getParamBounds(kind: GenomeKind): Record<string, [number, number] | string[]> {
@@ -397,11 +440,20 @@ export function randomGenome(
     // cache_ttl_min is integer minutes
     if (params.cache_ttl_min !== undefined) params.cache_ttl_min = Math.max(5, Math.round(params.cache_ttl_min as number));
   }
+  if (chosen === "poly_short_binary_directional") {
+    // Default to the full universe — Coinbase covers BTC/ETH/SOL/XRP/DOGE,
+    // OKX covers BNB/HYPE.
+    params.assets = "BTC,ETH,SOL,XRP,DOGE,BNB,HYPE";
+    if (params.pre_cutoff_min !== undefined) params.pre_cutoff_min = Math.max(2, Math.round(params.pre_cutoff_min as number));
+    if (params.max_window_min !== undefined) params.max_window_min = Math.max(3, Math.round(params.max_window_min as number));
+    if (params.max_positions_per_asset !== undefined) params.max_positions_per_asset = Math.max(1, Math.round(params.max_positions_per_asset as number));
+  }
   // Round integers where the strategy semantically expects integers (lookbacks, time stops).
   const intKeys = new Set([
     "lookback_h", "confirm_quiet_h", "time_stop_h",
     "lookback_min", "time_stop_min", "bs_vol_window_days",
-    "vel_window_min",
+    "vel_window_min", "pre_cutoff_min", "max_window_min",
+    "max_positions_per_asset",
   ]);
   for (const k of intKeys) if (params[k] !== undefined) params[k] = Math.round(params[k] as number);
   // Validate.
@@ -431,6 +483,7 @@ export function genomeNickname(g: Genome): string {
     case "wallet_copy_filtered": return `copy-${g.params.wallet_address.slice(2, 8)}-${g.params.copy_category}`;
     case "polymarket_market_maker": return `mm-${g.params.token_id === "any" ? "any" : g.params.token_id.slice(0, 6)}-s${g.params.spread_pts.toFixed(1)}`;
     case "llm_probability_oracle": return `oracle-${g.params.model.includes("opus") ? "opus" : g.params.model.includes("sonnet") ? "sonnet" : "haiku"}${g.params.category_filter ? `-${g.params.category_filter}` : ""}`;
+    case "poly_short_binary_directional": return `5m-binary-${g.params.assets.split(",").length}a`;
     case "multi_strategy": {
       const subKinds = g.params.subs.map((s) => s.kind.replace("cb_", "").replace("poly_", "").slice(0, 4));
       return `multi-${subKinds.join("+")}`;

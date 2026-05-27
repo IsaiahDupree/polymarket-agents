@@ -67,7 +67,10 @@ export function subscribeOrderFilled(opts: OnChainSubscribeOpts): () => void {
     const address = tag === "ctf" ? POLYGON_CONTRACTS.ctfExchange : POLYGON_CONTRACTS.negRiskCtfExchange;
     const unwatch = client.watchEvent({
       address,
-      event: ORDER_FILLED_EVENT,
+      // viem overloads on `event` vs `events`; the inferred type here picks
+      // the empty-event variant (`event: undefined`). Cast keeps the runtime
+      // behavior identical while satisfying the chosen overload.
+      event: ORDER_FILLED_EVENT as any,
       onLogs: (logs: Log[]) => {
         opts.onStatus?.("open");
         for (const log of logs) {
