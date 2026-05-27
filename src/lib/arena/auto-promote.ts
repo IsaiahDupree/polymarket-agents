@@ -36,7 +36,7 @@
  */
 import { db } from "@/lib/db/client";
 import { insertEvolutionEvent } from "@/lib/db/queries";
-import { listAliveElites } from "./db";
+import { listAliveElites, listAliveAgentsAcrossGens } from "./db";
 import { rankAgents } from "./score";
 import { createCapsule, getCapsule, setStatus } from "@/lib/capsules/store";
 import { readRiskBudgetFromEnv } from "./risk-budget";
@@ -76,9 +76,20 @@ export function runAutoPromote(opts: { topN?: number; minTrades?: number } = {})
   const topN = opts.topN ?? budget.inputs.nAgents;
   const minTrades = opts.minTrades ?? Number(process.env.ARENA_AUTO_PROMOTE_MIN_TRADES ?? DEFAULT_MIN_TRADES);
 
-  // 1. Find current elites and filter to proof-of-life qualifying set.
-  const elites = listAliveElites();
-  const ranked = rankAgents(elites);
+  // 1. Source candidate agents.
+  //
+  //   Previous behavior: only consider is_elite=1 agents. That broke when
+  //   non-live-eligible strategies (fade-spike) dominated fitness — they'd
+  //   take all elite slots, then auto-promote would filter them out, leaving
+  //   ZERO live capsules even though proven live-fillable agents existed.
+  //
+  //   New behavior: rank from ALL alive agents. The live-eligibility filter
+  //   below then picks the best LIVE-FILLABLE agents from that ranking.
+  //   Elite status is now used solely for cull protection (its original
+  //   purpose) — not as a gate for live capsule assignment.
+  //   Bug-fix 2026-05-27 (#25).
+  const candidates = listAliveAgentsAcrossGens();
+  const ranked = rankAgents(candidates);
   // Only strategies whose Polymarket fills are backed by the house market-maker
   // (off-book MM liquidity) can reliably fill FAK live orders. Strategies that
   // depend on visible CLOB orderbook depth (fade-spike, breakout, cross-venue-arb,

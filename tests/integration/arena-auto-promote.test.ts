@@ -137,13 +137,19 @@ describe("runAutoPromote — selection + capital split", () => {
     expect(r.promoted[0].agent_name).toBe("e3");
   });
 
-  it("only considers is_elite=1 agents (not just any alive agent)", async () => {
-    await seedAgent({ name: "non-elite", elite: false, trades: 10, realized: 100 });
-    await seedAgent({ name: "elite", elite: true, trades: 3, realized: 5 });
+  it("considers all alive live-eligible agents ranked by fitness (bug #25 — not just is_elite=1)", async () => {
+    // Pre-#25 contract: only is_elite=1 agents got promoted. That broke when
+    // non-live-eligible strategies dominated fitness (fade-spike taking all
+    // elite slots, then getting filtered out by live-eligibility check,
+    // leaving zero live capsules). Now auto-promote ranks ALL alive
+    // live-eligible agents and picks top-N by fitness regardless of elite flag.
+    await seedAgent({ name: "non-elite-top", elite: false, trades: 10, realized: 100 });  // higher fitness, NOT elite
+    await seedAgent({ name: "elite-lower", elite: true, trades: 3, realized: 5 });        // lower fitness, elite
     const { runAutoPromote } = await import("@/lib/arena/auto-promote");
     const r = runAutoPromote();
-    expect(r.qualified_agents).toBe(1);
-    expect(r.promoted[0].agent_name).toBe("elite");
+    expect(r.qualified_agents).toBe(2);   // both qualify (proof-of-life + live-eligible)
+    // Highest fitness wins regardless of elite flag.
+    expect(r.promoted.find((p) => p.agent_name === "non-elite-top")).toBeDefined();
   });
 
   it("excludes strategies that aren't live-fill-eligible (bug #23)", async () => {
@@ -224,15 +230,21 @@ describe("runAutoPromote — idempotency", () => {
 });
 
 describe("runAutoPromote — demote on fallout", () => {
-  it("pauses auto-live capsule when agent loses elite status", async () => {
+  it("pauses auto-live capsule when agent falls out of top-N by fitness (bug #25 — was: when agent loses elite flag)", async () => {
+    // Old contract: capsule paused when is_elite flipped to 0.
+    // New contract (#25): capsule paused when agent drops out of top-N ranked
+    //   by fitness among live-eligible kinds. Elite flag no longer gates this.
     const id1 = await seedAgent({ name: "e1", elite: true, trades: 5, realized: 20 });
     const { runAutoPromote } = await import("@/lib/arena/auto-promote");
     runAutoPromote();
-    // Agent loses elite status
-    const { db } = await import("@/lib/db/client");
-    db().prepare(`UPDATE paper_agents SET is_elite = 0 WHERE id = ?`).run(id1);
+    // Make e1 drop out of top-3 by seeding 3 higher-fitness rivals.
+    await seedAgent({ name: "rival1", elite: false, trades: 10, realized: 100 });
+    await seedAgent({ name: "rival2", elite: false, trades: 10, realized: 90 });
+    await seedAgent({ name: "rival3", elite: false, trades: 10, realized: 80 });
     const r = runAutoPromote();
-    expect(r.paused.length).toBe(1);
+    // e1 is now 4th; with topN=3 by default, its auto-live capsule should pause.
+    expect(r.paused.find((p) => p.agent_id === id1)).toBeDefined();
+    const { db } = await import("@/lib/db/client");
     const cap = db().prepare(`SELECT status FROM capsules WHERE paper_agent_id = ?`).get(id1) as { status: string };
     expect(cap.status).toBe("paused");
     // Agent itself is NOT retired
