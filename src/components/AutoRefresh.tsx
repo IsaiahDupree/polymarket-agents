@@ -8,20 +8,40 @@ import { useEffect, useState } from "react";
  * a small top-right pause toggle so the operator can freeze the view while
  * inspecting something. router.refresh() re-runs the server components
  * without scrolling or losing state — much smoother than meta-refresh.
+ *
+ * Renders NOTHING on the server — only mounts client-side after first effect.
+ * This sidesteps all hydration mismatches caused by:
+ *   - locale-dependent time formatting (toLocaleTimeString varies)
+ *   - browser extensions that rewrite the DOM (dark-mode helpers, ad blockers,
+ *     password managers all sometimes inject siblings or wrappers near
+ *     fixed-position floating UI)
+ *   - hot-reload state drift across structural edits to the parent layout
+ *
+ * The trade-off is a ~50ms flash where the badge isn't visible on first load.
+ * Acceptable for a debug-only badge that doesn't affect functionality.
  */
 export function AutoRefresh({ intervalMs = 30_000, label = "auto-refresh" }: { intervalMs?: number; label?: string }) {
   const router = useRouter();
+  const [mounted, setMounted] = useState(false);
   const [paused, setPaused] = useState(false);
   const [lastTick, setLastTick] = useState<Date | null>(null);
 
   useEffect(() => {
-    if (paused) return;
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (paused || !mounted) return;
     const id = setInterval(() => {
       router.refresh();
       setLastTick(new Date());
     }, intervalMs);
     return () => clearInterval(id);
-  }, [paused, intervalMs, router]);
+  }, [paused, intervalMs, router, mounted]);
+
+  // Don't render anything during SSR or first client render — eliminates all
+  // hydration mismatch risk for this component.
+  if (!mounted) return null;
 
   const seconds = Math.round(intervalMs / 1000);
   return (
@@ -36,10 +56,7 @@ export function AutoRefresh({ intervalMs = 30_000, label = "auto-refresh" }: { i
       </button>
       <span>{paused ? "paused" : `${label} ${seconds}s`}</span>
       {lastTick && !paused && (
-        // suppressHydrationWarning: server renders empty (no lastTick), client
-        // fills in after first interval tick. toLocaleTimeString is locale-
-        // dependent so SSR vs CSR would mismatch otherwise.
-        <span className="text-zinc-600" suppressHydrationWarning>· last {lastTick.toLocaleTimeString()}</span>
+        <span className="text-zinc-600">· last {lastTick.toLocaleTimeString()}</span>
       )}
     </div>
   );
