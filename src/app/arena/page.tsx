@@ -9,6 +9,7 @@ import { db } from "@/lib/db/client";
 import { buildLiveTickContext } from "@/lib/arena/context";
 import { diagnoseAgents, type AgentDiagnostic } from "@/lib/arena/diagnostic";
 import { wsHealth } from "@/lib/arena/realtime-ticks";
+import { LivePortfolioCard } from "@/components/LivePortfolioCard";
 
 export const dynamic = "force-dynamic";
 
@@ -132,6 +133,11 @@ export default async function ArenaPage() {
         )}
       </div>
 
+      {/* Live Polymarket portfolio — source of truth for real-money state.
+       *  Mounted ABOVE the sim leaderboard because operators want to see
+       *  actual fills + unrealized P/L first, before sim fitness rankings. */}
+      <LivePortfolioCard funderAddress={process.env.POLYMARKET_FUNDER_ADDRESS ?? ""} />
+
       <section className="grid grid-cols-5 gap-4">
         <Stat label="Alive agents" value={ranked.length.toString()} />
         <Stat label="Generations sealed" value={gens.filter((g) => g.sealed_at != null).length.toString()} />
@@ -162,7 +168,7 @@ export default async function ArenaPage() {
           </p>
         ) : (
           <table className="list">
-            <thead><tr><th>#</th><th>Agent</th><th>Born</th><th>Strategy</th><th className="text-right">Equity</th><th className="text-right">PnL%</th><th className="text-right">DD%</th><th className="text-right">Fitness</th><th className="text-right">Entries</th><th className="text-right">Round-trips</th><th className="text-right" title="Live capsule capital + ALLOW_TRADE mode">Live $</th></tr></thead>
+            <thead><tr><th>#</th><th>Agent</th><th>Born</th><th>Strategy</th><th className="text-right">Sim equity</th><th className="text-right">Sim PnL%</th><th className="text-right">DD%</th><th className="text-right">Fitness</th><th className="text-right">Entries</th><th className="text-right">Round-trips</th><th className="text-right" title="Live capital (allocated) + capsule trades today. Real fills are in the Live Portfolio card at the top.">Live cap</th></tr></thead>
             <tbody>
               {rankedElites.map(({ agent, score }, i) => {
                 const equity = liveEquity(agent);
@@ -205,11 +211,10 @@ export default async function ArenaPage() {
                     <td className="text-right tabular-nums text-zinc-400">{score.trades_count}</td>
                     <td className="text-right tabular-nums text-xs whitespace-nowrap">
                       {capsule ? (
-                        <span title={`today: ${capsule.trades_today} trades, daily P/L $${capsule.daily_pnl_usd.toFixed(2)}`}>
+                        <span title={`capsule capital $${capsule.capital_allocated_usd.toFixed(2)} · today: ${capsule.trades_today} trades, daily P/L $${capsule.daily_pnl_usd.toFixed(2)} (sim accounting). For REAL live P/L see the Live Portfolio card at the top of the page.`}>
                           <span className="text-zinc-300">${capsule.capital_allocated_usd.toFixed(2)}</span>
-                          <span className={`ml-2 ${capsule.current_pnl_usd >= 0 ? "text-accent-green" : "text-accent-red"}`}>
-                            {capsule.current_pnl_usd >= 0 ? "+" : "−"}${Math.abs(capsule.current_pnl_usd).toFixed(2)}
-                          </span>
+                          <span className="text-zinc-500 ml-1">·</span>
+                          <span className="text-zinc-500 ml-1">{capsule.trades_today}t</span>
                         </span>
                       ) : (
                         <span className="text-zinc-600">—</span>
