@@ -36,7 +36,10 @@ export function AutoRefresh({ intervalMs = 30_000, label = "auto-refresh" }: { i
       </button>
       <span>{paused ? "paused" : `${label} ${seconds}s`}</span>
       {lastTick && !paused && (
-        <span className="text-zinc-600">· last {lastTick.toLocaleTimeString()}</span>
+        // suppressHydrationWarning: server renders empty (no lastTick), client
+        // fills in after first interval tick. toLocaleTimeString is locale-
+        // dependent so SSR vs CSR would mismatch otherwise.
+        <span className="text-zinc-600" suppressHydrationWarning>· last {lastTick.toLocaleTimeString()}</span>
       )}
     </div>
   );

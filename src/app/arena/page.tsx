@@ -58,6 +58,7 @@ export default async function ArenaPage() {
   // to the position size. Bug-fix 2026-05-25.
   const allTimeTop = db().prepare(
     `SELECT pa.id, pa.name, pa.generation, pa.alive, pa.is_elite,
+            pa.genome_json, pa.introduced_by,
             pa.cash_usd_start, pa.cash_usd_current,
             pa.realized_pnl_usd, pa.unrealized_pnl_usd,
             pa.trades_count, pa.wins_count,
@@ -73,7 +74,7 @@ export default async function ArenaPage() {
       WHERE EXISTS (SELECT 1 FROM paper_trades pt WHERE pt.paper_agent_id = pa.id)
       ORDER BY net_pnl DESC, realized_pnl_usd DESC, entries_count DESC
       LIMIT 10`,
-  ).all() as Array<{ id: number; name: string; generation: number; alive: 0 | 1; is_elite: 0 | 1; cash_usd_start: number; cash_usd_current: number; realized_pnl_usd: number; unrealized_pnl_usd: number; trades_count: number; wins_count: number; kind: string; net_pnl: number; entries_count: number; open_principal: number }>;
+  ).all() as Array<{ id: number; name: string; generation: number; alive: 0 | 1; is_elite: 0 | 1; genome_json: string; introduced_by: string | null; cash_usd_start: number; cash_usd_current: number; realized_pnl_usd: number; unrealized_pnl_usd: number; trades_count: number; wins_count: number; kind: string; net_pnl: number; entries_count: number; open_principal: number }>;
 
   // Batched equity curves so each row can render an inline sparkline without
   // issuing 28+ extra queries.
@@ -253,17 +254,47 @@ export default async function ArenaPage() {
           <p className="text-xs text-zinc-500">No agent has traded yet across any generation. Wait for the snapshot worker to fill enough history for momentum / fade strategies to fire.</p>
         ) : (
           <table className="list">
-            <thead><tr><th>#</th><th>Agent</th><th>Gen</th><th>Kind</th><th>Status</th><th className="text-right">Start</th><th className="text-right">Equity</th><th className="text-right">Net PnL</th><th className="text-right" title="Positions opened (including still-open)">Entries</th><th className="text-right" title="Round-trips (closed positions only)">Round-trips</th><th className="text-right">Win%</th><th>Equity curve</th></tr></thead>
+            <thead><tr><th>#</th><th>Agent</th><th>Brain</th><th>Lineage</th><th>Gen</th><th>Kind</th><th>Status</th><th className="text-right">Start</th><th className="text-right">Equity</th><th className="text-right">Net PnL</th><th className="text-right" title="Positions opened (including still-open)">Entries</th><th className="text-right" title="Round-trips (closed positions only)">Round-trips</th><th className="text-right">Win%</th><th>Equity curve</th></tr></thead>
             <tbody>
               {allTimeTop.map((r, i) => {
                 const curve = equityCurves.get(r.id) ?? [];
                 const up = curve.length > 1 ? curve[curve.length - 1] >= curve[0] : false;
+                // AI-or-pattern detection (matches elite-roster badge logic).
+                // An agent counts as AI-driven if its genome includes an
+                // llm_probability_oracle component (top-level OR as a multi_strategy sub).
+                const isAi = /llm_probability_oracle/.test(r.genome_json ?? "");
+                // Lineage tag tells you where the genome came from — useful to
+                // visually compare LLM-mutation-bred vs preset vs survivor
+                // lineages once meta-evolution has had a few cycles to seed.
+                const lineageLabel: Record<string, { text: string; className: string }> = {
+                  "meta-llm": { text: "meta-LLM", className: "bg-purple-500/20 text-purple-300 border-purple-500/40" },
+                  "mutate-llm": { text: "mut-LLM", className: "bg-accent-blue/15 text-accent-blue border-accent-blue/40" },
+                  "mutate-programmatic": { text: "mut-prog", className: "bg-zinc-700/40 text-zinc-300 border-zinc-600/40" },
+                  "preset-aggressive": { text: "preset", className: "bg-accent-amber/15 text-accent-amber border-accent-amber/40" },
+                  "survivor-carryover": { text: "carry", className: "bg-zinc-800/40 text-zinc-500 border-zinc-700/40" },
+                  "survivor-carryover-refreshed": { text: "carry+", className: "bg-zinc-800/40 text-zinc-500 border-zinc-700/40" },
+                };
+                const lineage = r.introduced_by ? lineageLabel[r.introduced_by] : null;
                 return (
                 <tr key={r.id}>
                   <td className="text-zinc-500 text-xs">{i + 1}</td>
                   <td>
                     <Link className="text-zinc-100 hover:text-accent-blue" href={`/arena/${r.id}`}>{r.name}</Link>
                     {r.is_elite ? <span className="ml-1.5 text-[10px] px-1 rounded bg-accent-amber/20 text-accent-amber border border-accent-amber/40">ELITE</span> : null}
+                  </td>
+                  <td>
+                    <span
+                      className={`inline-flex items-center text-[10px] leading-none px-1.5 py-0.5 rounded border ${isAi ? "bg-accent-blue/15 text-accent-blue border-accent-blue/40" : "bg-zinc-700/40 text-zinc-400 border-zinc-600/40"}`}
+                      title={isAi ? "AI: genome includes llm_probability_oracle — Claude estimates probability per market" : "Pattern matcher: deterministic rules (velocity / z-score / threshold). No LLM."}
+                    >{isAi ? "🧠 AI" : "📐 pattern"}</span>
+                  </td>
+                  <td>
+                    {lineage ? (
+                      <span
+                        className={`inline-flex items-center text-[9px] leading-none px-1.5 py-0.5 rounded border ${lineage.className}`}
+                        title={`introduced_by=${r.introduced_by}`}
+                      >{lineage.text}</span>
+                    ) : <span className="text-zinc-600 text-xs">—</span>}
                   </td>
                   <td className="text-zinc-400 text-xs">g{r.generation}</td>
                   <td className="text-zinc-400 text-xs">{r.kind?.replace(/_/g, "-")}</td>
