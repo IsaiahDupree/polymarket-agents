@@ -24,9 +24,10 @@
  *
  * The agent's per-capsule risk budget:
  *   - capital_allocated = total / N
- *   - max_daily_loss = 40% of capital_allocated (i.e. capsule auto-pauses
- *     after a -40% day)
- *   - max_total_drawdown = 50% of capital_allocated
+ *   - max_daily_loss = ARENA_AUTO_PROMOTE_DAILY_LOSS_PCT × capital
+ *     (default 0.30 — capsule auto-pauses after a -30% day)
+ *   - max_total_drawdown = ARENA_AUTO_PROMOTE_TOTAL_DD_PCT × capital
+ *     (default 0.60 — capsule auto-pauses after -60% lifetime)
  *   - max_open_positions = 3
  *   - max_trades_per_day = 20
  *
@@ -67,6 +68,11 @@ export function runAutoPromote(opts: { topN?: number; minTrades?: number } = {})
 
   const topN = opts.topN ?? Number(process.env.ARENA_AUTO_PROMOTE_TOP_N ?? DEFAULT_TOP_N);
   const minTrades = opts.minTrades ?? Number(process.env.ARENA_AUTO_PROMOTE_MIN_TRADES ?? DEFAULT_MIN_TRADES);
+  // Risk profile for newly-created auto-live capsules. Defaults: 30% daily-
+  // loss cap, 60% total-drawdown cap (tighter than the original 40%/50%).
+  // Override via env so the operator can tune without a code change.
+  const dailyLossPct = Number(process.env.ARENA_AUTO_PROMOTE_DAILY_LOSS_PCT ?? "0.30");
+  const totalDdPct = Number(process.env.ARENA_AUTO_PROMOTE_TOTAL_DD_PCT ?? "0.60");
 
   // 1. Find current elites and filter to proof-of-life qualifying set.
   const elites = listAliveElites();
@@ -172,7 +178,7 @@ export function runAutoPromote(opts: { topN?: number; minTrades?: number } = {})
                   max_total_drawdown_usd = ?,
                   updated_at = datetime('now')
             WHERE id = ?`,
-        ).run(perCapsule, perCapsule, perCapsule * 0.4, perCapsule * 0.5, existing.id);
+        ).run(perCapsule, perCapsule, perCapsule * dailyLossPct, perCapsule * totalDdPct, existing.id);
         if (needsReactivate) setStatus(existing.id, "live");
         insertEvolutionEvent({
           event_type: "capsule-auto-rebalanced",
@@ -189,8 +195,8 @@ export function runAutoPromote(opts: { topN?: number; minTrades?: number } = {})
       name: `auto-live-${agent.name}`,
       capitalUsd: perCapsule,
       allowedVenues: ["polymarket"],
-      maxDailyLossUsd: perCapsule * 0.4,
-      maxTotalDrawdownUsd: perCapsule * 0.5,
+      maxDailyLossUsd: perCapsule * dailyLossPct,
+      maxTotalDrawdownUsd: perCapsule * totalDdPct,
       maxOpenPositions: 3,
       maxTradesPerDay: 20,
     });
