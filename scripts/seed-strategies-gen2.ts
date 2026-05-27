@@ -142,6 +142,45 @@ const seeds: AgentSeed[] = [
     ],
   },
   {
+    slug: "drift-midwindow",
+    name: "Drift Midwindow",
+    charter:
+      "Trajectory extrapolation on Polymarket 5-min crypto Up/Down binaries. Sample the first 2 min of intra-window price action; if the elapsed move is ≥1σ AND the trajectory-extrapolated final spot implies a probability ≥5pp away from the current Polymarket UP price, place a directional bet on the chosen side. Risk-budget $0 until a real-Polymarket-historicals backtest validates that the trajectory edge survives MM repricing — current crypto-only backtest only proves trajectory is informative, not that it beats the live quote.",
+    risk_budget_usd: 0,
+    strategies: [
+      {
+        slug: "midwindow-trajectory",
+        name: "Midwindow Trajectory",
+        thesis:
+          "First 2 min of a 5-min binary window carries directional signal in trajectories that are >1σ relative to the period's variance. Extrapolate linearly to T+5, compute P(UP) via Φ((projected - strike) / σ_remaining), bet on the side where the model probability diverges from the Polymarket UP best-ask by more than fee + threshold. Crypto-only backtest on 12k BTC + ETH 1-min candles shows hit-rate 85–95% at zMove≥1.0; the live edge depends on how much of that signal the MM has already priced in by T+2min — answered only by a real-Polymarket-historicals replay (v2).",
+        market_filter: {
+          tags: ["Crypto"],
+          duration_kinds: ["5m"],
+          assets: ["BTC", "ETH", "SOL", "XRP", "DOGE"],
+        },
+        initialSpec: {
+          scanner: "backtest:midwindow (no live scanner yet)",
+          entry: {
+            min_elapsed_ms: 90_000,
+            max_elapsed_ms: 150_000,
+            min_ticks: 30,
+            min_z_move: 1.0,
+            edge_threshold: 0.05,
+            fee_bps: 20,
+          },
+          sizing: { per_signal_usd: 5, daily_usd_cap: 0 },
+          exit: { type: "hold_to_resolution" },
+          executor: "(none v1 — requires real-Polymarket-historicals backtest before going live)",
+          env_to_arm_live: "DRIFT_MIDWINDOW_LIVE=1 (not implemented v1)",
+          notes:
+            "v1 is decision-logic + crypto-only backtest harness. Before paper or live: (a) capture real Polymarket 5m binary historicals for the same window the candles cover, (b) re-run backtest with those prices as the market quote, (c) confirm edge clears fees + MM markup. Then wire scanner + executor.",
+        },
+        rationale:
+          "v1 — pure decision-logic + backtest. Edge validated to be informative on crypto-only replay (hit-rate ≥0.78 at zMove≥1.0); live edge requires v2 Polymarket-historicals integration.",
+      },
+    ],
+  },
+  {
     slug: "hydra-consensus",
     name: "Hydra Consensus",
     charter:
@@ -224,7 +263,7 @@ const agentCount = (handle.prepare("SELECT COUNT(*) AS n FROM agents").get() as 
 const stratCount = (handle.prepare("SELECT COUNT(*) AS n FROM strategies").get() as any).n;
 const versionCount = (handle.prepare("SELECT COUNT(*) AS n FROM strategy_versions").get() as any).n;
 console.log(`[seed-gen2] complete: ${agentCount} agents, ${stratCount} strategies, ${versionCount} versions total.`);
-console.log(`[seed-gen2] gen-2 agents: nereid-scrape, lyra-cross-timeframe, pulse-microstructure, hydra-consensus`);
+console.log(`[seed-gen2] gen-2 agents: nereid-scrape, lyra-cross-timeframe, pulse-microstructure, drift-midwindow, hydra-consensus`);
 console.log(`[seed-gen2] next steps:`);
 console.log(`  - View at /agents`);
 console.log(`  - Run scanners: scan:near-resolution, scan:cross-timeframe, scan:orderbook-imbalance`);
