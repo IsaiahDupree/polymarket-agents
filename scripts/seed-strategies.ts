@@ -34,6 +34,10 @@ const seeds: AgentSeed[] = [
         thesis: "Markets often overreact intra-day to single headlines; if the 24h price move > 8 pts without follow-through in the next 6h, fade it.",
         market_filter: { tags: ["Politics", "Geopolitics"], min_volume_24h_usd: 50000, horizon_days_min: 14 },
         initialSpec: {
+          // Regime preference (Phase 5 of gated-decision-system PRD). Mean-
+          // reversion: best in chop / low-vol; avoid breakouts that often
+          // continue rather than revert.
+          regimes: ["chop", "low_vol"],
           entry: { type: "price_jump_reversion", threshold_pts: 8, lookback_h: 24, confirm_quiet_h: 6 },
           sizing: { kelly_fraction: 0.15, cap_per_trade_usd: 50 },
           exit: { target_pts: 4, stop_pts: 6, time_stop_h: 72 },
@@ -54,6 +58,9 @@ const seeds: AgentSeed[] = [
         thesis: "When the orderbook lags a scoring event by >3s, the top-of-book is stale; cross the spread if expected EV > 2%.",
         market_filter: { tags: ["Sports"], live_only: true },
         initialSpec: {
+          // Latency arb is regime-agnostic — works in any state where the
+          // book is slow to update.
+          regimes: ["any"],
           entry: { type: "stale_quote", min_lag_s: 3, min_ev_pct: 2 },
           sizing: { fixed_size_usd: 20 },
           exit: { type: "immediate_market_out" },
@@ -74,6 +81,9 @@ const seeds: AgentSeed[] = [
         thesis: "Each week, pick the 5 highest-volume political/macro markets and write a deep-dive note with confidence + suggested side.",
         market_filter: { tags: ["Politics", "Economy", "Finance"], min_volume_7d_usd: 100000 },
         initialSpec: {
+          // Research-only — no live trading, so regime gate doesn't apply
+          // but we set ["any"] for completeness.
+          regimes: ["any"],
           cadence: "weekly",
           n_targets: 5,
           deliverables: ["thesis_md", "confidence_pct", "suggested_side", "key_catalysts"],
@@ -94,6 +104,8 @@ const seeds: AgentSeed[] = [
         thesis: "When midpoint breaks the prior-week's high with >2x average volume, enter with a trailing stop at 60% of move.",
         market_filter: { tags: ["Crypto", "Tech", "Finance"], min_volume_24h_usd: 100000 },
         initialSpec: {
+          // Breakout/momentum: best in trending + breakout regimes.
+          regimes: ["trending", "breakout"],
           entry: { type: "breakout_high", lookback_days: 7, vol_multiple_min: 2 },
           sizing: { atr_fraction: 0.5, cap_per_trade_usd: 75 },
           exit: { trailing_pct: 0.6, hard_stop_pct: 0.25 },

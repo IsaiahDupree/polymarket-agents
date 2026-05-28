@@ -83,7 +83,8 @@
     "arena:promote-live": "tsx scripts/promote-to-live.ts",
     "bridge:to-polymarket": "tsx scripts/bridge-eth-to-polymarket.ts",
     "infer:capsule-diversity": "tsx scripts/infer-capsule-diversity.ts",
-    "worker:portfolio-snapshot": "tsx scripts/worker-portfolio-snapshot.ts"
+    "worker:portfolio-snapshot": "tsx scripts/worker-portfolio-snapshot.ts",
+    "backfill:strategy-regimes": "tsx scripts/backfill-strategy-regimes.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.98.0",

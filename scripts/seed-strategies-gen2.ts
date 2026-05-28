@@ -67,6 +67,9 @@ const seeds: AgentSeed[] = [
           max_days_to_resolution: 30,
         },
         initialSpec: {
+          // Near-resolution scrape works in any regime — purely mechanical
+          // convergence to $1.00, doesn't care about market trend or chop.
+          regimes: ["any"],
           scanner: "scan:near-resolution",
           entry: { min_price: 0.95, max_days_to_resolution: 30, min_days_to_resolution: 1, fee_bps: 20 },
           sizing: { per_signal_usd_cap: 25, target_edge: 0.05, daily_usd_cap: 100 },
@@ -97,6 +100,10 @@ const seeds: AgentSeed[] = [
           assets: ["BTC", "ETH", "SOL", "XRP"],
         },
         initialSpec: {
+          // Spread-arb is fundamentally regime-agnostic — relies on the
+          // shorter timeframe being slower-to-update vs the longer, which
+          // happens in trending AND chop conditions alike.
+          regimes: ["any"],
           scanner: "scan:cross-timeframe",
           entry: { min_z: 3.0, min_samples: 30, max_stale_sec: 60 },
           sizing: { per_signal_usd: 10, cap_per_pair_usd: 30, daily_usd_cap: 60 },
@@ -127,6 +134,9 @@ const seeds: AgentSeed[] = [
           min_liquidity_usd: 5000,
         },
         initialSpec: {
+          // Observation-only — regime doesn't gate anything since we don't
+          // place orders. ["any"] for completeness.
+          regimes: ["any"],
           scanner: "scan:orderbook-imbalance",
           mode: "watch",
           entry: { min_ratio: 3.0, min_signal_strength: 0.7, top_levels: 3, min_depth_usd: 1000 },
@@ -159,6 +169,9 @@ const seeds: AgentSeed[] = [
           assets: ["BTC", "ETH", "SOL", "XRP", "DOGE"],
         },
         initialSpec: {
+          // Trajectory extrapolation thrives on trending + breakout — that's
+          // when the 2-min path has predictive power for the remaining 3 min.
+          regimes: ["trending", "breakout"],
           scanner: "backtest:midwindow (no live scanner yet)",
           entry: {
             min_elapsed_ms: 90_000,
@@ -198,6 +211,10 @@ const seeds: AgentSeed[] = [
           min_effective_wallets: 3,
         },
         initialSpec: {
+          // Consensus tail-follow works in any regime — the signal is "smart
+          // money agrees", not "market is trending/chopping". ["any"] is
+          // correct here.
+          regimes: ["any"],
           executor: "worker:consensus-exec",
           entry: { min_effective_wallets: 3, min_combined_trust: 5, max_lag_min: 15 },
           sizing: { per_signal_usd: 15, daily_usd_cap: 60 },
