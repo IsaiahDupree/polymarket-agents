@@ -90,7 +90,10 @@
     "backfill:wallet-pnl": "tsx scripts/backfill-wallet-pnl-history.ts",
     "compare:evolution": "tsx scripts/compare-evolution-mechanisms.ts",
     "snapshot:evolution": "tsx scripts/snapshot-evolution-state.ts",
-    "supervisor": "tsx scripts/supervisor.ts"
+    "supervisor": "tsx scripts/supervisor.ts",
+    "audit:wallet": "tsx scripts/audit-wallet.ts",
+    "scan:late-window-scalp": "tsx scripts/scan-late-window-scalp.ts",
+    "worker:late-window-scalp-exec": "tsx scripts/worker-late-window-scalp-exec.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.98.0",

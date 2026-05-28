@@ -194,6 +194,48 @@ const seeds: AgentSeed[] = [
     ],
   },
   {
+    slug: "scalp-late-window",
+    name: "Scalp Late-Window",
+    charter:
+      "Mirror the operator's manual winning pattern on Polymarket 5m crypto Up/Down binaries: buy the heavily-favored side ($0.85-$0.98) in the last 1-3 minutes before resolution. Small bets ($2 default), high win-rate (~80% on operator's 39-trade sample). Codifies what a human is empirically doing well — the bot just systematizes it.",
+    risk_budget_usd: 5,
+    strategies: [
+      {
+        slug: "late-window-scalp",
+        name: "Late-window scalp",
+        thesis:
+          "In the last 1-3 minutes of a 5m binary, the favored side's ask ($0.85-$0.98) reflects the market's belief about resolution. Empirically the market is slightly slow to mark winners to $1.00, leaving 2-15 cents of payoff per share. Operator's manual record: 31/39 wins (79%) with positive net after isolating out-of-money directional bets. The bot replicates this with strict gates: ≥30s remaining (to fill), ≥$2 depth, ≥$0.02 payoff/share after fees, ≥30pp gap between Up and Down asks (clear favorite). Reject when gap is narrow — that's the directional-bet regime that costs the operator most.",
+        market_filter: {
+          tags: ["Crypto"],
+          duration_kinds: ["5m"],
+          assets: ["BTC", "ETH", "SOL", "XRP", "DOGE", "HYPE", "BNB"],
+        },
+        initialSpec: {
+          regimes: ["any"],
+          scanner: "scan:late-window-scalp",
+          entry: {
+            min_ask: 0.85,
+            max_ask: 0.98,
+            min_remaining_sec: 30,
+            max_remaining_sec: 180,
+            min_depth_usd: 2,
+            min_payoff_per_share: 0.02,
+            tie_threshold: 0.30,
+            fee_bps: 20,
+          },
+          sizing: { per_signal_usd: 2, daily_usd_cap: 10 },
+          exit: { type: "hold_to_resolution" },
+          executor: "worker:late-window-scalp-exec",
+          env_to_arm_live: "LATE_SCALP_LIVE=1",
+          notes:
+            "Sim by default. Set LATE_SCALP_LIVE=1 AND create capsule 'late-window-scalp' with $5 capital to go live. Match operator's pattern: $2/trade, $10 daily cap, very tight per-side depth check.",
+        },
+        rationale:
+          "v1 — codified from operator's wallet audit on 2026-05-28 (31/39 wins, 79% rate, net positive when out-of-money bets excluded). Detector validated by unit tests; executor exists; live deployment gated by env flag.",
+      },
+    ],
+  },
+  {
     slug: "hydra-consensus",
     name: "Hydra Consensus",
     charter:
@@ -280,7 +322,7 @@ const agentCount = (handle.prepare("SELECT COUNT(*) AS n FROM agents").get() as 
 const stratCount = (handle.prepare("SELECT COUNT(*) AS n FROM strategies").get() as any).n;
 const versionCount = (handle.prepare("SELECT COUNT(*) AS n FROM strategy_versions").get() as any).n;
 console.log(`[seed-gen2] complete: ${agentCount} agents, ${stratCount} strategies, ${versionCount} versions total.`);
-console.log(`[seed-gen2] gen-2 agents: nereid-scrape, lyra-cross-timeframe, pulse-microstructure, drift-midwindow, hydra-consensus`);
+console.log(`[seed-gen2] gen-2 agents: nereid-scrape, lyra-cross-timeframe, pulse-microstructure, drift-midwindow, scalp-late-window, hydra-consensus`);
 console.log(`[seed-gen2] next steps:`);
 console.log(`  - View at /agents`);
 console.log(`  - Run scanners: scan:near-resolution, scan:cross-timeframe, scan:orderbook-imbalance`);
