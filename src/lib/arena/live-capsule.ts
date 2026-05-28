@@ -18,6 +18,9 @@ import { db } from "@/lib/db/client";
 import { getDefaultRouter } from "@/lib/venue/router";
 import { insertEvolutionEvent } from "@/lib/db/queries";
 import { getBinaryMeta } from "./short-binaries";
+import { runDecisionPipeline } from "@/lib/decision/pipeline";
+import { recordDecision } from "@/lib/decision/journal";
+import type { DecisionContext } from "@/lib/decision/types";
 import type { Position, Signal } from "./types";
 
 export type LiveCapsuleBinding = {
@@ -203,6 +206,43 @@ export async function routeArenaSignal(
       ...polyMetadata,
     },
   };
+
+  // Decision-pipeline SHADOW mode (Phase 2). When DECISION_PIPELINE_SHADOW=1,
+  // build a DecisionContext, run the pipeline, and journal the "would-have-
+  // decided" outcome — WITHOUT modifying the real trade flow. This gives us
+  // observability data to calibrate the pipeline before flipping it active
+  // in Phase 3 (DECISION_PIPELINE_ENABLED=1).
+  //
+  // Wrapped in try/catch so pipeline misbehavior cannot abort a real order
+  // submit — pipeline failure logs to evolution_log and the real path continues.
+  if (process.env.DECISION_PIPELINE_SHADOW === "1") {
+    try {
+      const decisionCtx: DecisionContext = {
+        agentId,
+        capsuleId: capsule.id,
+        strategyKind: signal.venue, // best signal we have at this layer; v2 reads genome.kind from the bound paper_agent
+        proposal: {
+          venue: order.venue,
+          symbol: order.symbol,
+          side: order.side,
+          sizeUsd: order.size,
+          price: order.refPrice,
+          conditionId: order.symbol,
+          metadata: order.metadata,
+        },
+        snapshot: undefined, // no snapshot at this layer in v1; regime gate will return 'unknown' and score 0.7
+        ts: new Date().toISOString(),
+      };
+      const decisionResult = runDecisionPipeline(decisionCtx);
+      recordDecision(decisionCtx, decisionResult);
+    } catch (err) {
+      insertEvolutionEvent({
+        event_type: "decision-pipeline-shadow-error",
+        summary: `pipeline shadow failed (non-fatal): ${(err as Error).message?.slice(0, 200)}`,
+        payload_json: JSON.stringify({ capsule_id: capsule.id, agent_id: agentId, market_id }),
+      });
+    }
+  }
 
   const verdict = await router.submit(order);
   // For sim-poly entries we need to know which token was actually filled
