@@ -39,9 +39,10 @@ const GROUPS: NavGroup[] = [
   },
   {
     label: "Capsules",
-    matches: ["/capsules", "/safety", "/deposit", "/decisions"],
+    matches: ["/capsules", "/safety", "/deposit", "/decisions", "/portfolio"],
     items: [
       { href: "/capsules", label: "Capsules", description: "Real-money envelopes + activation" },
+      { href: "/portfolio", label: "Portfolio governance ★", description: "Reserve + correlations + loss-overlap" },
       { href: "/decisions", label: "Decision journal ★", description: "Per-trade gate audit (pipeline shadow + active)" },
       { href: "/safety", label: "Safety control plane", description: "All gates + halt + freshness" },
       { href: "/deposit", label: "Polymarket deposit ★", description: "Generate QR for funding from Coinbase Base App" },
