@@ -40,6 +40,7 @@ import { listAliveElites, listAliveAgentsAcrossGens } from "./db";
 import { rankAgents } from "./score";
 import { createCapsule, getCapsule, setStatus } from "@/lib/capsules/store";
 import { readRiskBudgetFromEnv } from "./risk-budget";
+import { inferDiversityProfile } from "@/lib/capsules/diversity-inference";
 import type { PaperAgentRow } from "./types";
 
 const DEFAULT_TOP_N = 3;
@@ -121,8 +122,64 @@ export function runAutoPromote(opts: { topN?: number; minTrades?: number } = {})
     })
     .slice(0, topN);
 
-  const qualifyingIds = new Set(qualifying.map((r) => r.agent.id));
-  const perCapsule = qualifying.length > 0 ? totalBudget / qualifying.length : 0;
+  // Phase 10 correlation-aware veto: for each qualifying elite, infer its
+  // diversity profile from genome kind and check against EXISTING live
+  // capsules' profiles. If a candidate would be structurally indistinguishable
+  // from one already in play (same strategy_family AND asset_class), skip.
+  //
+  // For a new capsule with no PnL history, real pnl_corr is unknowable —
+  // we use a structural proxy: same family + asset = high predicted correlation.
+  // The candidate is allowed to STAY a paper capsule but won't go live.
+  //
+  // Skip the veto entirely when there are no existing live capsules (nothing
+  // to correlate against) OR when a candidate's own existing capsule is being
+  // rebalanced (it's already in the live mix; no new collision).
+  const existingLiveProfiles = db().prepare(
+    `SELECT id, paper_agent_id, strategy_family, asset_class
+       FROM capsules
+      WHERE status = 'live' AND name LIKE 'auto-live-%' AND paper_agent_id IS NOT NULL`,
+  ).all() as Array<{ id: string; paper_agent_id: number; strategy_family: string | null; asset_class: string | null }>;
+
+  const correlationVetoed: Array<{ agent_id: number; agent_name: string; reason: string }> = [];
+  const correlationFiltered = qualifying.filter(({ agent }) => {
+    // Don't veto agents who already have a live capsule (just rebalance).
+    if (existingLiveProfiles.some((p) => p.paper_agent_id === agent.id)) return true;
+    // Infer the candidate's profile.
+    let kind: string | null = null;
+    try {
+      kind = JSON.parse(agent.genome_json).kind ?? null;
+    } catch { /* keep null → fallback profile */ }
+    const candidateProfile = inferDiversityProfile(kind);
+    if (!candidateProfile.strategy_family) return true; // unknown — let it through
+
+    // Check structural collision against existing live capsules belonging
+    // to OTHER agents.
+    const collision = existingLiveProfiles.find(
+      (p) =>
+        p.paper_agent_id !== agent.id &&
+        p.strategy_family === candidateProfile.strategy_family &&
+        p.asset_class === candidateProfile.asset_class,
+    );
+    if (collision) {
+      const reason = `same diversity profile (family=${candidateProfile.strategy_family}, asset=${candidateProfile.asset_class}) as existing live capsule ${collision.id.slice(0, 8)} — would not add diversification`;
+      correlationVetoed.push({ agent_id: agent.id, agent_name: agent.name, reason });
+      insertEvolutionEvent({
+        event_type: "capsule-auto-promote-vetoed",
+        summary: `Auto-promote vetoed elite ${agent.name} (#${agent.id}) — ${reason}`,
+        payload_json: JSON.stringify({
+          agent_id: agent.id, agent_name: agent.name,
+          candidate_profile: { strategy_family: candidateProfile.strategy_family, asset_class: candidateProfile.asset_class },
+          collision_capsule_id: collision.id,
+        }),
+      });
+      return false;
+    }
+    return true;
+  });
+
+  // Use the filtered list as the actual promotion set.
+  const qualifyingIds = new Set(correlationFiltered.map((r) => r.agent.id));
+  const perCapsule = correlationFiltered.length > 0 ? totalBudget / correlationFiltered.length : 0;
 
   // 2. Pause existing auto-live capsules whose agent fell out of the top-N.
   // CRITICAL: this runs BEFORE the "no qualifying" check so a sudden drop in
@@ -153,10 +210,13 @@ export function runAutoPromote(opts: { topN?: number; minTrades?: number } = {})
 
   // Now we can early-return if there's nothing to promote (capsules have
   // already been paused above).
-  if (qualifying.length === 0) {
+  if (correlationFiltered.length === 0) {
+    const reasonDetail = correlationVetoed.length > 0
+      ? ` (${correlationVetoed.length} vetoed by correlation check)`
+      : "";
     return {
-      skipped: `no qualifying elites (need ≥${minTrades} trades + positive realized PnL)`,
-      qualified_agents: 0,
+      skipped: `no qualifying elites (need ≥${minTrades} trades + positive realized PnL)${reasonDetail}`,
+      qualified_agents: qualifying.length,
       promoted: [],
       paused,
       total_budget_usd: totalBudget,
@@ -167,7 +227,7 @@ export function runAutoPromote(opts: { topN?: number; minTrades?: number } = {})
   // 3. For each qualifying agent: ensure they have an auto-live capsule with
   //    the correct capital. Create new or rebalance existing.
   const promoted: AutoPromoteResult["promoted"] = [];
-  for (const { agent } of qualifying) {
+  for (const { agent } of correlationFiltered) {
     const existing = db().prepare(
       `SELECT id, name, status, capital_allocated_usd FROM capsules
          WHERE paper_agent_id = ? AND status IN ('live','paper','paused')
