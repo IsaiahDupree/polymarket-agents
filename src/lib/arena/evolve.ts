@@ -27,6 +27,7 @@ import { applySignal, markToMarket } from "./sim";
 import { runAutoPromote } from "./auto-promote";
 import { runMetaEvolution, shouldRunMetaEvolution } from "./meta-evolution";
 import { runCircuitBreaker } from "@/lib/capsules/circuit-breaker";
+import { applyClusterKillSwitches } from "@/lib/portfolio/cluster-killswitch-wrapper";
 import { getBinaryMeta } from "./short-binaries";
 import type { LiveAgent, PaperAgentRow, TickContext } from "./types";
 
@@ -177,6 +178,13 @@ export type EvolveResult = {
   circuit_breaker: {
     inspected: number;
     paused: number;
+  };
+  /** Cluster kill switches summary — see portfolio/cluster-killswitch.ts. */
+  cluster_killswitch: {
+    inspected: number;
+    paused: number;
+    risk_off: number;
+    global_kill_switch: boolean;
   };
   /** Meta-evolution: when this seal triggers a meta-evolve pass
    *  (every ARENA_META_EVOLVE_EVERY gens), summarize how many variants
@@ -444,10 +452,17 @@ export async function runEvolveOnce(opts: { survivalPct?: number; championshipGe
   // re-promoted in the same seal. Bug-fix #14 (2026-05-26).
   const breaker = runCircuitBreaker();
 
+  // Cluster kill switches (Phase 8) — pause every capsule in a cluster
+  // whose aggregate daily loss exceeds the family / asset-class / global
+  // thresholds. Runs AFTER circuit-breaker (per-capsule layer) and BEFORE
+  // auto-promote so freshly-paused capsules don't get re-promoted in the
+  // same seal. Pure module + DB wrapper; thresholds in .env.local.
+  const clusterTrips = applyClusterKillSwitches();
+
   // Auto-promote top-N elites to live capsules (no-op unless
   // ALLOW_AUTO_PROMOTE=1 + ARENA_LIVE_CAPITAL_TOTAL_USD set). Logs to
-  // evolution_log internally. Runs AFTER seal so elite status reflects the
-  // just-promoted top-N.
+  // evolution_log internally. Runs AFTER cluster killswitch so a freshly-
+  // paused capsule isn't re-promoted in the same seal.
   const autoPromote = runAutoPromote();
 
   // Meta-evolution: every ARENA_META_EVOLVE_EVERY gens (default 5), ask
@@ -487,6 +502,12 @@ export async function runEvolveOnce(opts: { survivalPct?: number; championshipGe
     circuit_breaker: {
       inspected: breaker.inspected,
       paused: breaker.paused.length,
+    },
+    cluster_killswitch: {
+      inspected: clusterTrips.inspected,
+      paused: clusterTrips.paused.length,
+      risk_off: clusterTrips.risk_off.length,
+      global_kill_switch: clusterTrips.global_kill_switch,
     },
     meta_evolve: metaEvolveResult,
   };
