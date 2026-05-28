@@ -87,7 +87,8 @@
     "backfill:strategy-regimes": "tsx scripts/backfill-strategy-regimes.ts",
     "init:reserve-capsule": "tsx scripts/init-reserve-capsule.ts",
     "scan:complement-sum": "tsx scripts/scan-complement-sum.ts",
-    "backfill:wallet-pnl": "tsx scripts/backfill-wallet-pnl-history.ts"
+    "backfill:wallet-pnl": "tsx scripts/backfill-wallet-pnl-history.ts",
+    "compare:evolution": "tsx scripts/compare-evolution-mechanisms.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.98.0",

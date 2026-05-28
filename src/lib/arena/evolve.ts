@@ -28,6 +28,13 @@ import { runAutoPromote } from "./auto-promote";
 import { runMetaEvolution, shouldRunMetaEvolution } from "./meta-evolution";
 import { runCircuitBreaker } from "@/lib/capsules/circuit-breaker";
 import { applyClusterKillSwitches } from "@/lib/portfolio/cluster-killswitch-wrapper";
+import {
+  computeBreedingWeights,
+  isClusterAwareBreedingEnabled,
+  readBreedingThresholdsFromEnv,
+  type ClusterTripEvent,
+} from "./cluster-aware-breeding";
+import { inferDiversityProfile } from "@/lib/capsules/diversity-inference";
 import { getBinaryMeta } from "./short-binaries";
 import type { LiveAgent, PaperAgentRow, TickContext } from "./types";
 
@@ -269,6 +276,72 @@ export async function runEvolveOnce(opts: { survivalPct?: number; championshipGe
   // continue trading across the gen boundary.
   const activeRanked = ranked.filter((r) => r.agent.entries_count > 0 && !eliteIds.has(r.agent.id));
   const inactiveRanked = ranked.filter((r) => r.agent.entries_count === 0 && !eliteIds.has(r.agent.id));
+
+  // Self-evolving improvement B (2026-05-28): cluster-aware breeding
+  // pressure. Re-sort activeRanked by FITNESS × cluster-weight so parents
+  // from recently-killswitched families get under-weighted in selection.
+  // The next generation tilts away from over-explored failing clusters.
+  // Doesn't mutate score.fitness — sort key is computed inline.
+  let breedingWeights: Map<string, number> = new Map();
+  if (isClusterAwareBreedingEnabled()) {
+    const since = new Date(Date.now() - 14 * 86_400_000).toISOString();
+    const tripRows = db().prepare(
+      `SELECT created_at, summary, payload_json
+         FROM evolution_log
+        WHERE event_type = 'cluster-killswitch-trip' AND created_at >= ?`,
+    ).all(since) as Array<{ created_at: string; summary: string; payload_json: string }>;
+    const trips: ClusterTripEvent[] = [];
+    for (const row of tripRows) {
+      let reason = "strategy_family_cluster";
+      let strategyFamily: string | null = null;
+      try {
+        const payload = JSON.parse(row.payload_json) as { reason?: string; summary?: string };
+        if (typeof payload.reason === "string") reason = payload.reason;
+        // Try to parse the family from "family '<name>' tripped" in the summary.
+        const matchSummary = (payload.summary ?? row.summary) || "";
+        const m = /family '([^']+)' tripped/.exec(matchSummary);
+        if (m) strategyFamily = m[1] ?? null;
+      } catch {
+        const m = /family '([^']+)' tripped/.exec(row.summary);
+        if (m) strategyFamily = m[1] ?? null;
+      }
+      trips.push({ ts: row.created_at, reason, strategy_family: strategyFamily });
+    }
+    breedingWeights = computeBreedingWeights(trips, readBreedingThresholdsFromEnv());
+
+    if (breedingWeights.size > 0) {
+      // Re-sort activeRanked by adjusted fitness (weight × fitness) desc.
+      const familyByAgent = new Map<number, string | null>();
+      for (const r of activeRanked) {
+        let kind: string | null = null;
+        try { kind = JSON.parse(r.agent.genome_json).kind ?? null; } catch { /* skip */ }
+        familyByAgent.set(r.agent.id, kind ? inferDiversityProfile(kind).strategy_family ?? null : null);
+      }
+      activeRanked.sort((a, b) => {
+        const fa = familyByAgent.get(a.agent.id);
+        const fb = familyByAgent.get(b.agent.id);
+        const wa: number = fa ? (breedingWeights.get(fa) ?? 1.0) : 1.0;
+        const wb: number = fb ? (breedingWeights.get(fb) ?? 1.0) : 1.0;
+        return b.score.fitness * wb - a.score.fitness * wa;
+      });
+
+      insertEvolutionEvent({
+        event_type: "cluster-aware-breeding-applied",
+        summary: `Cluster-aware breeding: ${breedingWeights.size} family weight(s) applied to gen-${gen.gen_number} selection`,
+        payload_json: JSON.stringify({
+          gen: gen.gen_number,
+          family_weights: Object.fromEntries(breedingWeights.entries()),
+          activeRanked_top_5: activeRanked.slice(0, 5).map((r) => ({
+            agent_id: r.agent.id,
+            family: familyByAgent.get(r.agent.id),
+            raw_fitness: r.score.fitness,
+            weight: (familyByAgent.get(r.agent.id) && breedingWeights.get(familyByAgent.get(r.agent.id)!)) ?? 1.0,
+          })),
+        }),
+      });
+    }
+  }
+
   const { survivors, cull } = partitionSurvivors(activeRanked, survivalPct);
   const inactiveCull = inactiveRanked;  // every zero-entry agent is culled
 

@@ -42,6 +42,13 @@ import { createCapsule, getCapsule, setStatus } from "@/lib/capsules/store";
 import { readRiskBudgetFromEnv } from "./risk-budget";
 import { inferDiversityProfile } from "@/lib/capsules/diversity-inference";
 import { allocateByFitness } from "./fitness-allocation";
+import {
+  decideKindEligibility,
+  eligibleKinds,
+  isDynamicBlacklistEnabled,
+  readThresholdsFromEnv as readEligibilityThresholdsFromEnv,
+  type KindPerformance,
+} from "./dynamic-eligibility";
 import type { PaperAgentRow } from "./types";
 
 const DEFAULT_TOP_N = 3;
@@ -102,7 +109,62 @@ export function runAutoPromote(opts: { topN?: number; minTrades?: number } = {})
   // Override via ARENA_AUTO_PROMOTE_LIVE_KINDS=kind1,kind2,... (defaults below).
   // Bug-fix 2026-05-27 (#23) — without this, auto-promote was burning capsule
   // capital on fade-spike agents that never filled.
-  const liveEligibleKinds = (process.env.ARENA_AUTO_PROMOTE_LIVE_KINDS ?? "poly_short_binary_directional,llm_probability_oracle,polymarket_market_maker,cb_momentum_burst,cb_mean_reversion,cb_breakout").split(",").map((s) => s.trim());
+  //
+  // Self-evolving fix A (2026-05-28): replaces static env list with a
+  // rolling-window perf query when DYNAMIC_KIND_BLACKLIST=1 (default ON).
+  // A kind drops out if its 30d realized PnL across all agents is ≤ 0;
+  // recovers when it turns positive again. The env list still acts as a
+  // safety ceiling (never go live with a kind not on it).
+  let liveEligibleKinds: string[];
+  const dynamicEnabled = isDynamicBlacklistEnabled();
+  if (dynamicEnabled) {
+    // Query rolling-window perf grouped by genome kind.
+    const windowDays = Number(process.env.ARENA_DYNAMIC_KIND_WINDOW_DAYS ?? "30");
+    const cutoffIso = new Date(Date.now() - windowDays * 86_400_000).toISOString();
+    // The paper_trades table doesn't carry the genome kind — derive via the
+    // agent's genome_json. We aggregate trades+pnl per kind.
+    const tradeRows = db().prepare(
+      `SELECT pa.genome_json AS genome_json, pt.realized_pnl_usd
+         FROM paper_trades pt
+         JOIN paper_agents pa ON pa.id = pt.paper_agent_id
+        WHERE pt.tick_at >= ?`,
+    ).all(cutoffIso) as Array<{ genome_json: string; realized_pnl_usd: number }>;
+    const byKind = new Map<string, { trades: number; pnl: number }>();
+    for (const r of tradeRows) {
+      let kind: string | null = null;
+      try { kind = JSON.parse(r.genome_json).kind ?? null; } catch { /* skip */ }
+      if (!kind) continue;
+      const entry = byKind.get(kind) ?? { trades: 0, pnl: 0 };
+      entry.trades++;
+      entry.pnl += Number.isFinite(r.realized_pnl_usd) ? r.realized_pnl_usd : 0;
+      byKind.set(kind, entry);
+    }
+    // Always include all safety-ceiling kinds in the decision (even those
+    // with zero trades in the window → grace period gets them through).
+    const thresholds = readEligibilityThresholdsFromEnv();
+    const perfs: KindPerformance[] = [];
+    for (const kind of thresholds.safetyCeiling) {
+      const entry = byKind.get(kind) ?? { trades: 0, pnl: 0 };
+      perfs.push({ kind, trades_in_window: entry.trades, realized_pnl_in_window: entry.pnl });
+    }
+    const decisions = decideKindEligibility(perfs, thresholds);
+    liveEligibleKinds = [...eligibleKinds(decisions)];
+    // Log the decision set for observability.
+    const blacklisted = decisions.filter((d) => !d.eligible && d.reason === "negative_pnl");
+    if (blacklisted.length > 0) {
+      insertEvolutionEvent({
+        event_type: "kind-dynamic-blacklisted",
+        summary: `Dynamic kind blacklist: ${blacklisted.length} kind(s) excluded due to negative ${windowDays}d PnL`,
+        payload_json: JSON.stringify({
+          window_days: windowDays,
+          blacklisted: blacklisted.map((d) => ({ kind: d.kind, pnl: d.realized_pnl_in_window, trades: d.trades_in_window })),
+          eligible_now: liveEligibleKinds,
+        }),
+      });
+    }
+  } else {
+    liveEligibleKinds = (process.env.ARENA_AUTO_PROMOTE_LIVE_KINDS ?? "poly_short_binary_directional,llm_probability_oracle,polymarket_market_maker,cb_momentum_burst,cb_mean_reversion,cb_breakout").split(",").map((s) => s.trim());
+  }
   const qualifying = ranked
     .filter(({ agent }) => {
       if (agent.trades_count < minTrades) return false;
