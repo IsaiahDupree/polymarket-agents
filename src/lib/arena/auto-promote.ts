@@ -165,7 +165,7 @@ export function runAutoPromote(opts: { topN?: number; minTrades?: number } = {})
   } else {
     liveEligibleKinds = (process.env.ARENA_AUTO_PROMOTE_LIVE_KINDS ?? "poly_short_binary_directional,llm_probability_oracle,polymarket_market_maker,cb_momentum_burst,cb_mean_reversion,cb_breakout").split(",").map((s) => s.trim());
   }
-  const qualifying = ranked
+  let qualifying = ranked
     .filter(({ agent }) => {
       if (agent.trades_count < minTrades) return false;
       if (agent.realized_pnl_usd <= 0) return false;
@@ -184,6 +184,35 @@ export function runAutoPromote(opts: { topN?: number; minTrades?: number } = {})
       return kind ? liveEligibleKinds.includes(kind) : false;
     })
     .slice(0, topN);
+
+  // Operator-set lifetime PnL gate (2026-05-28): a candidate can only be
+  // promoted to live if its lifetime realized PnL meets the env-configured
+  // threshold (default $96). Prevents new / under-proven agents from going
+  // live with real money — they have to earn the right to trade by
+  // building up a sim track record first.
+  const MIN_LIFETIME_PNL_USD = Number(process.env.MIN_LIVE_CAPSULE_PNL_USD ?? "96");
+  if (Number.isFinite(MIN_LIFETIME_PNL_USD) && MIN_LIFETIME_PNL_USD > 0) {
+    const beforePnlGate = qualifying.length;
+    const pnlGated = qualifying.filter(({ agent }) => {
+      const lifetimePnl = (agent.realized_pnl_usd ?? 0) + (agent.unrealized_pnl_usd ?? 0);
+      if (lifetimePnl < MIN_LIFETIME_PNL_USD) {
+        insertEvolutionEvent({
+          event_type: "live-pnl-gate-vetoed",
+          summary: `Auto-promote vetoed ${agent.name} (#${agent.id}) — lifetime PnL $${lifetimePnl.toFixed(2)} < gate $${MIN_LIFETIME_PNL_USD}`,
+          payload_json: JSON.stringify({
+            agent_id: agent.id, agent_name: agent.name,
+            lifetime_pnl_usd: lifetimePnl, threshold_usd: MIN_LIFETIME_PNL_USD,
+          }),
+        });
+        return false;
+      }
+      return true;
+    });
+    if (pnlGated.length < beforePnlGate) {
+      console.log(`[auto-promote] PnL gate: ${beforePnlGate - pnlGated.length} of ${beforePnlGate} elites below $${MIN_LIFETIME_PNL_USD} lifetime PnL — vetoed`);
+    }
+    qualifying = pnlGated;
+  }
 
   // Phase 10 correlation-aware veto: for each qualifying elite, infer its
   // diversity profile from genome kind and check against EXISTING live
