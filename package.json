@@ -85,7 +85,8 @@
     "infer:capsule-diversity": "tsx scripts/infer-capsule-diversity.ts",
     "worker:portfolio-snapshot": "tsx scripts/worker-portfolio-snapshot.ts",
     "backfill:strategy-regimes": "tsx scripts/backfill-strategy-regimes.ts",
-    "init:reserve-capsule": "tsx scripts/init-reserve-capsule.ts"
+    "init:reserve-capsule": "tsx scripts/init-reserve-capsule.ts",
+    "scan:complement-sum": "tsx scripts/scan-complement-sum.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.98.0",
