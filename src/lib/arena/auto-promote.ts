@@ -41,6 +41,7 @@ import { rankAgents } from "./score";
 import { createCapsule, getCapsule, setStatus } from "@/lib/capsules/store";
 import { readRiskBudgetFromEnv } from "./risk-budget";
 import { inferDiversityProfile } from "@/lib/capsules/diversity-inference";
+import { allocateByFitness } from "./fitness-allocation";
 import type { PaperAgentRow } from "./types";
 
 const DEFAULT_TOP_N = 3;
@@ -179,6 +180,28 @@ export function runAutoPromote(opts: { topN?: number; minTrades?: number } = {})
 
   // Use the filtered list as the actual promotion set.
   const qualifyingIds = new Set(correlationFiltered.map((r) => r.agent.id));
+
+  // Capital-follows-fitness allocation: winners get more capital, losers
+  // get at least the floor (default 15% of budget). Same total envelope as
+  // before — only the split changes. Env override:
+  //   ARENA_AUTO_PROMOTE_MIN_SHARE=0.15 (or any 0..1/N value)
+  // Set to 1/N (e.g. 0.33 for 3 elites) to fall back to equal split.
+  const minShare = Number(process.env.ARENA_AUTO_PROMOTE_MIN_SHARE ?? "0.15");
+  const allocations = correlationFiltered.length > 0
+    ? allocateByFitness({
+        agents: correlationFiltered.map((r) => ({
+          id: r.agent.id,
+          name: r.agent.name,
+          fitness: r.score.fitness,
+        })),
+        totalBudgetUsd: totalBudget,
+        minShare: Number.isFinite(minShare) && minShare > 0 && minShare * correlationFiltered.length < 1
+          ? minShare
+          : 1 / correlationFiltered.length, // safe fallback: equal split
+      })
+    : [];
+  const allocationByAgentId = new Map(allocations.map((a) => [a.agent_id, a.allocation_usd]));
+  // Keep perCapsule for backward-compat (used in skipped result + logs).
   const perCapsule = correlationFiltered.length > 0 ? totalBudget / correlationFiltered.length : 0;
 
   // 2. Pause existing auto-live capsules whose agent fell out of the top-N.
@@ -226,8 +249,12 @@ export function runAutoPromote(opts: { topN?: number; minTrades?: number } = {})
 
   // 3. For each qualifying agent: ensure they have an auto-live capsule with
   //    the correct capital. Create new or rebalance existing.
+  // Each capsule's allocation comes from the fitness-weighted result
+  // (allocationByAgentId). The min-share floor guarantees every elite
+  // still gets meaningful capital; top performers earn extra.
   const promoted: AutoPromoteResult["promoted"] = [];
-  for (const { agent } of correlationFiltered) {
+  for (const { agent, score } of correlationFiltered) {
+    const agentAllocation = allocationByAgentId.get(agent.id) ?? perCapsule;
     const existing = db().prepare(
       `SELECT id, name, status, capital_allocated_usd FROM capsules
          WHERE paper_agent_id = ? AND status IN ('live','paper','paused')
@@ -240,7 +267,7 @@ export function runAutoPromote(opts: { topN?: number; minTrades?: number } = {})
       // counters; those get reconciled by the live-capsule path.
       const cur = getCapsule(existing.id);
       if (!cur) continue;
-      const needsRebalance = Math.abs(cur.capital_allocated_usd - perCapsule) > 0.01;
+      const needsRebalance = Math.abs(cur.capital_allocated_usd - agentAllocation) > 0.01;
       const needsReactivate = cur.status !== "live";
       if (needsRebalance || needsReactivate) {
         db().prepare(
@@ -251,22 +278,22 @@ export function runAutoPromote(opts: { topN?: number; minTrades?: number } = {})
                   max_total_drawdown_usd = ?,
                   updated_at = datetime('now')
             WHERE id = ?`,
-        ).run(perCapsule, perCapsule, budget.perCapsule.daily_loss_cap_usd, budget.perCapsule.total_dd_cap_usd, existing.id);
+        ).run(agentAllocation, agentAllocation, budget.perCapsule.daily_loss_cap_usd, budget.perCapsule.total_dd_cap_usd, existing.id);
         if (needsReactivate) setStatus(existing.id, "live");
         insertEvolutionEvent({
           event_type: "capsule-auto-rebalanced",
-          summary: `Capsule ${existing.id.slice(0, 8)}… rebalanced to $${perCapsule.toFixed(2)} for agent ${agent.name}` + (needsReactivate ? " (reactivated)" : ""),
-          payload_json: JSON.stringify({ capsule_id: existing.id, agent_id: agent.id, new_capital: perCapsule, reactivated: needsReactivate }),
+          summary: `Capsule ${existing.id.slice(0, 8)}… rebalanced to $${agentAllocation.toFixed(2)} for agent ${agent.name} (fitness=${score.fitness.toFixed(4)})` + (needsReactivate ? " (reactivated)" : ""),
+          payload_json: JSON.stringify({ capsule_id: existing.id, agent_id: agent.id, new_capital: agentAllocation, reactivated: needsReactivate }),
         });
       }
-      promoted.push({ agent_id: agent.id, agent_name: agent.name, capsule_id: existing.id, capital_usd: perCapsule });
+      promoted.push({ agent_id: agent.id, agent_name: agent.name, capsule_id: existing.id, capital_usd: agentAllocation });
       continue;
     }
 
     // No existing capsule — create one.
     const capsule = createCapsule({
       name: `auto-live-${agent.name}`,
-      capitalUsd: perCapsule,
+      capitalUsd: agentAllocation,
       allowedVenues: ["polymarket"],
       maxDailyLossUsd: budget.perCapsule.daily_loss_cap_usd,
       maxTotalDrawdownUsd: budget.perCapsule.total_dd_cap_usd,
@@ -277,14 +304,14 @@ export function runAutoPromote(opts: { topN?: number; minTrades?: number } = {})
     setStatus(capsule.id, "live");
     insertEvolutionEvent({
       event_type: "capsule-auto-promoted",
-      summary: `Auto-promoted elite ${agent.name} (#${agent.id}) → $${perCapsule.toFixed(2)} live capsule ${capsule.id.slice(0, 8)}…`,
+      summary: `Auto-promoted elite ${agent.name} (#${agent.id}) → $${agentAllocation.toFixed(2)} live capsule ${capsule.id.slice(0, 8)}… (fitness-weighted)`,
       payload_json: JSON.stringify({
         capsule_id: capsule.id, agent_id: agent.id, agent_name: agent.name,
-        capital_usd: perCapsule,
+        capital_usd: agentAllocation,
         trades_count: agent.trades_count, realized_pnl_usd: agent.realized_pnl_usd,
       }),
     });
-    promoted.push({ agent_id: agent.id, agent_name: agent.name, capsule_id: capsule.id, capital_usd: perCapsule });
+    promoted.push({ agent_id: agent.id, agent_name: agent.name, capsule_id: capsule.id, capital_usd: agentAllocation });
   }
 
   return {

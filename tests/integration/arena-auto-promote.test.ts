@@ -213,19 +213,30 @@ describe("runAutoPromote — idempotency", () => {
     expect(n).toBe(1);
   });
 
-  it("rebalances capital when N changes", async () => {
+  it("rebalances capital when N changes (fitness-weighted)", async () => {
     const id1 = await seedAgent({ name: "e1", elite: true, trades: 5, realized: 20 });
     const { runAutoPromote } = await import("@/lib/arena/auto-promote");
     runAutoPromote();
-    // After first run: 1 elite, $30 capital
+    // After first run: 1 elite gets full $30 budget (no allocation math needed).
     const { db } = await import("@/lib/db/client");
     let cap = db().prepare(`SELECT capital_allocated_usd FROM capsules WHERE paper_agent_id = ?`).get(id1) as { capital_allocated_usd: number };
     expect(cap.capital_allocated_usd).toBeCloseTo(30, 4);
-    // Add a second qualifying elite → re-run should rebalance to $15 each
-    await seedAgent({ name: "e2", elite: true, trades: 5, realized: 15 });
+    // Add a second qualifying elite → re-run should rebalance.
+    // Post fitness-weighted allocation: distribution depends on each agent's
+    // fitness; the invariant is total ≈ budget AND each capsule gets at
+    // least the 15% floor ($4.50 of $30).
+    const id2 = await seedAgent({ name: "e2", elite: true, trades: 5, realized: 15 });
     runAutoPromote();
-    cap = db().prepare(`SELECT capital_allocated_usd FROM capsules WHERE paper_agent_id = ?`).get(id1) as { capital_allocated_usd: number };
-    expect(cap.capital_allocated_usd).toBeCloseTo(15, 4);
+    const cap1 = db().prepare(`SELECT capital_allocated_usd FROM capsules WHERE paper_agent_id = ?`).get(id1) as { capital_allocated_usd: number };
+    const cap2 = db().prepare(`SELECT capital_allocated_usd FROM capsules WHERE paper_agent_id = ?`).get(id2) as { capital_allocated_usd: number };
+    // Total preserved within rounding tolerance.
+    expect(cap1.capital_allocated_usd + cap2.capital_allocated_usd).toBeCloseTo(30, 1);
+    // Floor honored: each gets ≥ 15% of $30 = $4.50.
+    expect(cap1.capital_allocated_usd).toBeGreaterThanOrEqual(4.5);
+    expect(cap2.capital_allocated_usd).toBeGreaterThanOrEqual(4.5);
+    // Neither exceeds 100% (sanity).
+    expect(cap1.capital_allocated_usd).toBeLessThanOrEqual(30);
+    expect(cap2.capital_allocated_usd).toBeLessThanOrEqual(30);
   });
 });
 
