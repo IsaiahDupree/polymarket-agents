@@ -1,16 +1,18 @@
-# Implementation Plan — Gated Decision System + Capsule Portfolio Governance
+# Implementation Plan — Gated Decision System + Capsule Portfolio Governance + Selective Micro-Edges
 
-**Date:** 2026-05-27
+**Date:** 2026-05-27, extended 2026-05-28
 **Source PRDs:**
 - `docs/prd/gated-decision-system-2026-05-27.md` (per-trade decision gating)
 - `docs/prd/capsule-portfolio-governance-2026-05-27.md` (portfolio-level diversification)
+- `docs/prd/selective-micro-edges-2026-05-28.md` (edge discovery + calibration)
 
 **Sequencing principle:** **additive only**. The live trading system stays up the whole time. Every phase ships independently; if phase N+1 misbehaves, rolling back phase N+1 leaves N working.
 
-**Two workstreams, one plan:**
-- Phases 1–5 ship the per-trade decision pipeline (gated decision system PRD).
-- Phases 6–11 ship the capsule portfolio governance layer.
-- They share infrastructure (`decision_journal`) but can be developed in parallel after Phase 1.
+**Three workstreams, one plan:**
+- Phases 1–5 ship the per-trade decision pipeline (gated decision system PRD) — DONE
+- Phases 6–11 ship the capsule portfolio governance layer — DONE
+- Phases 12–15 ship selective micro-edges + calibration (this extension)
+- They share infrastructure (`decision_journal`) but can be developed in parallel.
 
 ---
 
@@ -235,6 +237,83 @@ Phases 6–11 implement the capsule portfolio governance PRD. They build on Phas
 
 ---
 
+---
+
+# Workstream C — Selective Micro-Edges (added 2026-05-28)
+
+Phases 12–15 implement the selective-micro-edges PRD. Edge discovery + calibration on top of the gating + governance infrastructure from workstreams A + B.
+
+### Phase 12 — Complement-sum arbitrage scanner (~3 hours)
+
+**Goal:** mechanical arbitrage when `Up_ask + Down_ask < $1`. Cleanest new edge; doesn't require any predictive model.
+
+| Sub-task | File(s) | Change |
+|---|---|---|
+| 12.1 | `src/lib/strategies/complement-sum-arb.ts` (new) | Pure detector. Input: `BinaryBookSnapshot` (conditionId, up/down best-ask + depth). Output: `ComplementArbOpportunity` with profit/pair, max_pairs, time-to-resolve. |
+| 12.2 | `scripts/scan-complement-sum.ts` (new) | Polls Polymarket binaries, calls detector, persists to `evolution_log` with `event_type='complement-sum-opportunity'`. Dedup by conditionId + day-bucket. |
+| 12.3 | `scripts/worker-complement-sum-exec.ts` (new) | Gated executor. ATOMIC two-leg fill: place Up + Down orders; on partial-fill retry up to N times; on persistent partial, unwind. `COMPLEMENT_ARB_LIVE=1` env to arm. |
+| 12.4 | Tests | `tests/unit/complement-sum-arb.test.ts`: combined cost above/at/below 1.0; fees clipping; insufficient depth → max_pairs=0; invalid prices return null; time-to-resolve filter. |
+| 12.5 | Seed | Add `complement-sum-arbiter` gen-2 agent to `scripts/seed-strategies-gen2.ts`. |
+
+**Verification:** Run `npm run scan:complement-sum` — outputs opportunity rows when combined-cost dips below 0.97. Run executor in sim mode against synthetic snapshots; verify atomic unwind on partial-fill.
+
+**Rollback:** `COMPLEMENT_ARB_LIVE=0` → scanner still surfaces opportunities to `/opportunities` UI, no live execution.
+
+---
+
+### Phase 13 — Calibration tracker (~2 hours)
+
+**Goal:** measure whether journaled decision scores predict realized outcomes. Bucket by approval_score band, compute win-rate per bucket, surface on `/calibration`.
+
+| Sub-task | File(s) | Change |
+|---|---|---|
+| 13.1 | `src/lib/decision/calibration.ts` (new) | Pure module: `bucketDecisions(rows, bins?)` → `[{ lo, hi, n, wins, win_rate, expected_rate, calibration_error }]`. Maps decision_journal rows to outcomes via paper_trades / live fill resolution. |
+| 13.2 | `src/app/calibration/page.tsx` (new) | Renders calibration table + reliability diagram (per-bucket actual vs expected win-rate). Filter by strategy_kind + capsule. |
+| 13.3 | `src/app/api/calibration/route.ts` (new) | JSON endpoint backing the page. |
+| 13.4 | `src/components/NavMenu.tsx` | Add `/calibration` under Capsules group. |
+| 13.5 | Tests | `tests/unit/calibration.test.ts`: synthetic decision-rows + outcomes → expected bucket stats. |
+
+**Verification:** Wait 24h after Phase 12 + shadow mode running. Visit `/calibration`. Look for buckets with `calibration_error > 0.10` — those are bands where the score is dishonest and the bucketing in `score.ts` needs tuning.
+
+**Rollback:** delete the route — calibration math doesn't affect live trades.
+
+---
+
+### Phase 14 — Independent-signals agreement gate (~2 hours)
+
+**Goal:** wire the `signal_agreement` weight slot in `DEFAULT_GATE_WEIGHTS` (already 0.15) to an actual gate. Counts UNIQUE INFORMATION CLUSTERS, not raw signal count. Implements the operator's "5 agents looking at one Markov signal are not 5 independent edges" principle.
+
+| Sub-task | File(s) | Change |
+|---|---|---|
+| 14.1 | `src/lib/decision/gates/signal-agreement.ts` (new) | Pure gate. Input: `ctx.proposal.metadata.signals[]` — each tagged with `cluster` (one of: `price-action`, `volatility`, `microstructure`, `cross-venue`, `smart-money`, `event`). Output: 5+ clusters agree → score 1.0; 3-4 → 0.7 + REDUCE; ≤2 → 0.3 + REDUCE; hard conflict → REJECT. |
+| 14.2 | `src/lib/decision/pipeline.ts` | Insert signal-agreement gate between regime + edge. |
+| 14.3 | Strategy updates | Existing strategy detectors (NRS, CTS, midwindow, OBI, consensus) emit their primary signal cluster + direction so the gate has data to aggregate. |
+| 14.4 | Tests | `tests/unit/signal-agreement.test.ts`: 5 same-cluster signals → counted as 1 vote; 5 distinct-cluster signals → full agreement; conflicting strong signals → reject. |
+
+**Verification:** Decision journal entries after Phase 14 ships should show non-trivial signal_agreement scores. Strategies that previously fired alone now see their pipeline result depend on whether OTHER independent clusters agree.
+
+**Rollback:** Set gate weight to 0 in env override; or remove from pipeline.
+
+---
+
+### Phase 15 — Slippage-aware edge gate + vol-scalp detector (~3 hours)
+
+**Goal:** make the existing `edge` gate honest by subtracting expected slippage from the model edge. Ship vol-scalp as a research-only detector for v1.
+
+| Sub-task | File(s) | Change |
+|---|---|---|
+| 15.1 | `src/lib/decision/slippage.ts` (new) | Pure: `estimateExecutionPrice(sizeUsd, orderBookL2)` → volume-weighted expected fill. Returns midpoint + impact_bps. |
+| 15.2 | `src/lib/decision/gates.ts` `edgeGate()` | When `ctx.snapshot.orderBook` present, call slippage estimator + subtract impact from net edge before threshold check. |
+| 15.3 | `src/lib/strategies/vol-scalp.ts` (new) | Pure detector for straddle setups: signals when realized 2-min vol < entry premium AND time-remaining ≥ MIN_HOLD. Returns ScalpOpportunity with expected payoff. |
+| 15.4 | `scripts/backtest-vol-scalp.ts` (new) | Replays BTC/ETH candles + (synthetic mid-prices for Up/Down) to validate the thesis. |
+| 15.5 | Tests | `tests/unit/slippage.test.ts` (thick + thin book) + `tests/unit/vol-scalp.test.ts` (detector triggers + filters). |
+
+**Verification:** Decision journal `gate_results_json` for an `edge` gate now includes `details.impact_bps`. Vol-scalp backtest reports hit-rate; v1 ships as research-only signal source.
+
+**Rollback:** edge gate falls back to current behavior when `ctx.snapshot.orderBook` absent. Vol-scalp script is a one-shot, no live trading impact.
+
+---
+
 ## Deferred to v2 (not in this plan)
 
 | What | Why deferred |
@@ -275,16 +354,35 @@ Phases 6–11 implement the capsule portfolio governance PRD. They build on Phas
 | 10 | 2 | Lifecycle stages + correlation-aware promotion. | New capsules can't auto-promote into already-saturated correlation slots |
 | 11 | 2 | Reserve capsule un-deployable; `/portfolio` UI live. | Always-on survival floor + operator sees the whole portfolio in one view |
 
-**Total: 26 hours** across both workstreams (12 + 14). Workstream B (Phases 6–11) can start as soon as Phase 1 lands — `decision_journal` is the only shared dependency.
+**Workstream C — Selective micro-edges:**
 
-**Recommended sequencing for a single operator:**
-1. Phase 1 (foundation)
-2. Phase 6 (diversity profile — fast, immediate UI win on `/arena`)
-3. Phase 2 + Phase 7 in parallel (shadow pipeline + correlation engine — both observability)
-4. Phase 8 (cluster kill switches — first defensive layer above per-capsule cap)
-5. Phase 3 (flip decision pipeline active)
-6. Phases 9, 10, 11 (governance + lifecycle + UI) — order can flex based on what data we see by then
-7. Phase 4, 5 (UI + strategy regime declarations) — backfill
+| Phase | Hours | Status after phase | Operator value |
+|---|---|---|---|
+| 12 | 3 | Complement-sum scanner + executor (sim default; live with env arm). | First mechanical (non-predictive) edge in the system |
+| 13 | 2 | Calibration tracker + `/calibration` UI. | Honest answer to "do 87%-confidence trades actually win 87%?" |
+| 14 | 2 | Independent-signals agreement gate wired. | Filters out trades where 5 correlated signals masquerade as 5 votes |
+| 15 | 3 | Slippage-aware edge gate + vol-scalp research detector. | Edge gate stops counting top-of-book mid as the fill price |
+
+**Total: 36 hours** across all three workstreams (12 + 14 + 10). Workstreams A + B are DONE (26h). Workstream C (Phases 12–15, 10h) is the remaining work.
+
+**Recommended sequencing for Workstream C:**
+1. **Phase 13 first** (calibration tracker) — cheapest, read-only, immediately useful: lets you see whether the existing shadow-mode decisions are well-calibrated before building anything else.
+2. **Phase 12** (complement-sum arb) — cleanest new edge. Mechanical, doesn't depend on any model. If filled at viable prices, it's profitable in isolation.
+3. **Phase 14** (independent-signals gate) — turns existing infrastructure into a real ensemble.
+4. **Phase 15** (slippage + vol-scalp) — makes the edge gate honest; ships vol-scalp research-only.
+
+**Done sequencing (for reference):**
+1. ✅ Phase 1 (foundation)
+2. ✅ Phase 6 (diversity profile)
+3. ✅ Phase 2 (shadow pipeline + regime)
+4. ✅ Phase 7 (correlation engine)
+5. ✅ Phase 4 (decisions UI)
+6. ✅ Phase 5 (regime declarations backfill)
+7. ✅ Phase 8 (cluster kill switches)
+8. ✅ Phase 9 (Global Risk Governor)
+9. ✅ Phase 11 (reserve + portfolio UI)
+10. ✅ Phase 10 (lifecycle + correlation-aware promote)
+11. ✅ Phase 3 (active enforcement wiring — env-gated)
 
 ## Pre-flight checklist before phase 3 (flipping active)
 
