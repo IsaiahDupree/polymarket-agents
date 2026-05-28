@@ -2,12 +2,14 @@ import Link from "next/link";
 import { Sparkline } from "@/components/Sparkline";
 import { AutoRefresh } from "@/components/AutoRefresh";
 import { PromoteToLiveButton } from "@/components/PromoteToLiveButton";
+import { GovernanceCard } from "@/components/GovernanceCard";
 import { equityCurveForAgent, getPaperAgent, listTradesForAgent, toLiveAgent } from "@/lib/arena/db";
 import { scoreAgent, liveEquity } from "@/lib/arena/score";
 import { loadRecentCandles, velocity, acceleration } from "@/lib/arena/momentum";
 import { buildLiveTickContext } from "@/lib/arena/context";
 import { decide } from "@/lib/arena/sim";
 import { db } from "@/lib/db/client";
+import { parseGenome } from "@/lib/arena/genome";
 import type { Genome } from "@/lib/arena/genome";
 
 export const dynamic = "force-dynamic";
@@ -88,6 +90,15 @@ export default async function ArenaAgentDetail({ params }: { params: Promise<{ i
     `SELECT id, status FROM capsules WHERE paper_agent_id = ? AND status IN ('paper','live') LIMIT 1`,
   ).get(agentId) as { id: string; status: string } | undefined;
 
+  // Strategy kind for governance card — used to filter calibration / decisions
+  // when no capsule is bound. Genome JSON always carries the kind.
+  let strategyKindForGov: string | undefined;
+  try {
+    strategyKindForGov = parseGenome(row.genome_json).kind;
+  } catch {
+    strategyKindForGov = undefined;
+  }
+
   return (
     <div className="space-y-6">
       <AutoRefresh label={`agent-${row.id}`} intervalMs={15_000} />
@@ -112,6 +123,12 @@ export default async function ArenaAgentDetail({ params }: { params: Promise<{ i
           />
         )}
       </div>
+
+      {/* Governance — per-agent view of decision pipeline + portfolio governance.
+       *  Inline diversity profile, capsule state, recent decisions, calibration,
+       *  governor / killswitch events. Reads strategy_kind from the genome so
+       *  calibration filtering works without a capsule binding too. */}
+      <GovernanceCard paperAgentId={agentId} strategyKind={strategyKindForGov} />
 
       {/* Live decision context — what would this agent do right now? */}
       <section className={`card ${liveDecision?.kind === "entry" ? "border-accent-green/40" : liveDecision?.kind === "exit" ? "border-accent-amber/40" : "border-ink-700"}`} data-testid="agent-live-context">

@@ -2,6 +2,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { currentVersion, getAgentBySlug, listStrategiesForAgent, listVersions } from "@/lib/db/queries";
 import { buildAgentContext } from "@/lib/agents/context";
+import { GovernanceCard } from "@/components/GovernanceCard";
+import { db } from "@/lib/db/client";
 
 export const dynamic = "force-dynamic";
 
@@ -22,6 +24,26 @@ export default async function AgentDetail({ params }: { params: Promise<{ slug: 
   // research-loop evaluators see when they make decisions.
   const contexts = strategies.map((s) => ({ strategy: s, ctx: buildAgentContext(s.id) }));
 
+  // Find a capsule bound to any of this agent's strategies (gen-2 capsules
+  // link via strategy_id, not paper_agent_id). For the governance card we
+  // pick the live-or-paper one if multiple exist.
+  const strategyIds = strategies.map((s) => s.id);
+  let agentCapsule: { id: string } | undefined;
+  if (strategyIds.length > 0) {
+    const placeholders = strategyIds.map(() => "?").join(",");
+    agentCapsule = db()
+      .prepare(
+        `SELECT id FROM capsules
+          WHERE strategy_id IN (${placeholders})
+            AND status IN ('live', 'paper', 'paused')
+          ORDER BY (status = 'live') DESC, (status = 'paper') DESC, updated_at DESC
+          LIMIT 1`,
+      )
+      .get(...strategyIds) as { id: string } | undefined;
+  }
+  // For calibration filtering — use the first strategy's slug as a kind hint.
+  const primaryStrategyKind = strategies[0]?.slug;
+
   return (
     <div className="space-y-6">
       <div>
@@ -34,6 +56,11 @@ export default async function AgentDetail({ params }: { params: Promise<{ slug: 
           <span>status: <span className={agent.status === "active" ? "text-accent-green" : "text-accent-amber"}>{agent.status}</span></span>
         </div>
       </div>
+
+      {/* Governance — diversity profile, capsule state, decisions, calibration,
+       *  governor / killswitch history. capsuleId from strategies binding;
+       *  calibration filtered by primary strategy slug. */}
+      <GovernanceCard capsuleId={agentCapsule?.id} strategyKind={primaryStrategyKind} />
 
       <section>
         <h2 className="card-title">Strategies</h2>
