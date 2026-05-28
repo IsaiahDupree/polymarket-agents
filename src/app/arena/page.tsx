@@ -131,8 +131,15 @@ export default async function ArenaPage() {
   const wsRows = wsHealth(60);
 
   return (
-    <div className="space-y-8">
+    // AutoRefresh deliberately rendered as a SIBLING of the main wrapper.
+    // It mounts client-only (returns null on SSR) which shifts the children
+    // index of its parent on hydration — when nested inside the space-y-8
+    // div, that index shift makes React think the className itself changed.
+    // Putting it next to (not inside) the main wrapper keeps the wrapper's
+    // children array stable across SSR + CSR. See bug audit 2026-05-28.
+    <>
       <AutoRefresh label="arena" />
+      <div className="space-y-8" suppressHydrationWarning>
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Arena — evolving paper agents</h1>
         <p className="text-zinc-400 mt-1 text-sm">
@@ -492,6 +499,7 @@ export default async function ArenaPage() {
         <Link href="/api/arena/leaderboard" className="hover:text-zinc-300">→ Leaderboard JSON</Link>
       </nav>
     </div>
+    </>
   );
 }
 
