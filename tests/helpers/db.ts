@@ -37,6 +37,8 @@ export function makeMemoryDb(): Database.Database {
   ensureColumn(db, "capsules", "directional_bias",       "directional_bias TEXT");
   ensureColumn(db, "capsules", "diversity_profile_json", "diversity_profile_json TEXT");
   ensureColumn(db, "capsules", "diversity_confidence",   "diversity_confidence TEXT NOT NULL DEFAULT 'inferred'");
+  // Phase 7: capsule_pnl_daily + capsule_correlations come from schema.sql via
+  // CREATE TABLE IF NOT EXISTS — no ALTERs needed for the test in-memory DB.
   db.exec(`
     CREATE TABLE IF NOT EXISTS realtime_ticks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

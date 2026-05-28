@@ -656,6 +656,57 @@ CREATE TABLE IF NOT EXISTS retroactive_consensus_buckets (
 );
 CREATE INDEX IF NOT EXISTS idx_retro_buckets_run ON retroactive_consensus_buckets(run_id);
 
+-- Capsule daily-PnL history (Phase 7 of capsule-portfolio-governance PRD).
+-- Snapshotted at UTC midnight by scripts/worker-portfolio-snapshot.ts before
+-- the auto-reset zeroes daily_pnl_usd. Gives the correlation engine a clean
+-- time series per capsule for Pearson + joint-loss math.
+--
+-- UNIQUE(capsule_id, pnl_date) makes the worker idempotent — re-running on
+-- the same day updates the row instead of duplicating it.
+CREATE TABLE IF NOT EXISTS capsule_pnl_daily (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  capsule_id          TEXT NOT NULL,                       -- capsules.id
+  pnl_date            TEXT NOT NULL,                       -- YYYY-MM-DD (UTC)
+  daily_pnl_usd       REAL NOT NULL,                       -- snapshot of capsules.daily_pnl_usd at end of UTC day
+  trades_count        INTEGER NOT NULL DEFAULT 0,          -- trades_today at snapshot time
+  ending_equity_usd   REAL,                                -- capsules.capital_available_usd + open_position_cost_usd
+  drawdown_usd        REAL,                                -- max drawdown observed within the day, if known
+  created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(capsule_id, pnl_date)
+);
+CREATE INDEX IF NOT EXISTS idx_capsule_pnl_daily_date ON capsule_pnl_daily(pnl_date);
+CREATE INDEX IF NOT EXISTS idx_capsule_pnl_daily_capsule ON capsule_pnl_daily(capsule_id, pnl_date);
+
+-- Capsule pair correlation snapshots. One row per (capsule_a, capsule_b,
+-- snapshot_date). The worker computes pair stats from capsule_pnl_daily
+-- and writes the snapshot daily. Older rows kept for trend analysis.
+--
+-- Verdict thresholds (from PRD §4.2 + §4.6):
+--   pnl_corr > 0.55 AND asset_overlap > 0.7  → 'too_similar'
+--   pnl_corr > 0.55 OR  asset_overlap > 0.7  → 'correlated_safe'
+--   otherwise                                → 'diversified'
+--
+-- low_confidence=1 when sample_days < 7 — global risk governor does not
+-- veto on low-confidence correlations.
+CREATE TABLE IF NOT EXISTS capsule_correlations (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  snapshot_date         TEXT NOT NULL,                     -- YYYY-MM-DD when snapshot was taken
+  capsule_a             TEXT NOT NULL,
+  capsule_b             TEXT NOT NULL,
+  pnl_corr              REAL,                              -- Pearson over last N daily-PnL points (NULL when stdev=0)
+  asset_overlap         REAL NOT NULL DEFAULT 0,           -- Jaccard of allowed_assets, 0..1
+  strategy_family_match INTEGER NOT NULL DEFAULT 0,        -- 0/1
+  loss_overlap          REAL NOT NULL DEFAULT 0,           -- fraction of days where BOTH had negative pnl
+  drawdown_overlap      REAL NOT NULL DEFAULT 0,           -- v1 = same as loss_overlap; v2 will use intra-day drawdowns
+  sample_days           INTEGER NOT NULL,
+  verdict               TEXT NOT NULL,                     -- 'diversified' | 'correlated_safe' | 'too_similar'
+  low_confidence        INTEGER NOT NULL DEFAULT 0,
+  created_at            TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_capsule_correlations_snapshot ON capsule_correlations(snapshot_date);
+CREATE INDEX IF NOT EXISTS idx_capsule_correlations_pair ON capsule_correlations(capsule_a, capsule_b, snapshot_date);
+CREATE INDEX IF NOT EXISTS idx_capsule_correlations_verdict ON capsule_correlations(verdict, snapshot_date);
+
 -- Gated decision system audit log (PRD: docs/prd/gated-decision-system-2026-05-27.md).
 -- One row per proposed trade — whether approved, reduced, watchlist-only,
 -- rejected, or killswitched. Lets the operator answer "why didn't we trade X?"
