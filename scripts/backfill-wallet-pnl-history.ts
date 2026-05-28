@@ -66,6 +66,18 @@ type Trade = {
   transactionHash?: string;
 };
 
+/** Redemption activity entry — Polymarket emits these when a position is
+ *  redeemed at resolution. type field can be 'REDEMPTION' or 'CLAIM'
+ *  depending on the API version. */
+type RedemptionEvent = {
+  timestamp: number; // unix seconds
+  conditionId: string;
+  type?: string;
+  size?: number;
+  usdcSize?: number;
+  transactionHash?: string;
+};
+
 type CapsuleRow = {
   id: string;
   status: string;
@@ -152,20 +164,26 @@ async function main() {
     return;
   }
 
-  // 2. Fetch trade activity (gives per-trade timestamps).
+  // 2. Fetch trade activity (gives per-trade timestamps) + REDEMPTION activity
+  // (gives resolution timestamps for binaries that closed at expiry).
   console.log(`[backfill-wallet-pnl] fetching /activity?type=TRADE...`);
   const activity = (await fetchJson<Trade[]>(
     `https://data-api.polymarket.com/activity?user=${wallet}&limit=${args.limit}&type=TRADE`,
   )) ?? [];
   console.log(`  → ${activity.length} trade events`);
 
-  // 3. Build conditionId → latest_sell_timestamp_ms map.
-  // For each conditionId, find the most-recent SELL trade. That's our close
-  // timestamp. (Polymarket binaries close via SELL or via REDEMPTION; for
-  // direct sells we use the trade ts; for redemptions Polymarket events
-  // surface them in activity with a different type — for v1 we use SELL as
-  // the proxy; redemption-style closes get filtered by missing trade match
-  // and counted as 'orphans'.)
+  console.log(`[backfill-wallet-pnl] fetching /activity?type=REDEEM...`);
+  // Polymarket uses 'REDEEM' (singular) as the activity type for resolved-
+  // market redemptions, not 'REDEMPTION'. Verified empirically against the
+  // wallet's actual activity feed (2026-05-28).
+  const redemptions = (await fetchJson<RedemptionEvent[]>(
+    `https://data-api.polymarket.com/activity?user=${wallet}&limit=${args.limit}&type=REDEEM`,
+  )) ?? [];
+  console.log(`  → ${redemptions.length} REDEEM events`);
+
+  // 3. Build conditionId → latest_close_timestamp_ms map. Close = the most
+  // recent of either SELL trade or REDEMPTION/CLAIM event for that condition.
+  // This covers both manual exits AND market-expiry settlement paths.
   const closeTsByCondition = new Map<string, number>();
   for (const t of activity) {
     if (t.side !== "SELL") continue;
@@ -173,6 +191,13 @@ async function main() {
     const existing = closeTsByCondition.get(t.conditionId);
     if (existing === undefined || tsMs > existing) {
       closeTsByCondition.set(t.conditionId, tsMs);
+    }
+  }
+  for (const r of redemptions) {
+    const tsMs = r.timestamp * 1000;
+    const existing = closeTsByCondition.get(r.conditionId);
+    if (existing === undefined || tsMs > existing) {
+      closeTsByCondition.set(r.conditionId, tsMs);
     }
   }
 
