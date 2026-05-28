@@ -115,6 +115,15 @@ export type DecisionContext = {
     ticks?: { ts: number; price: number }[];
     /** Trailing 24h realized vol percentile, if available. */
     volPercentile?: number;
+    /**
+     * Optional L2 order book — when supplied, the edge gate (Phase 15)
+     * subtracts realistic fill-price slippage from the model edge before
+     * comparing to threshold.
+     */
+    orderBook?: {
+      bids: { price: number; size: number }[];
+      asks: { price: number; size: number }[];
+    };
   };
   /** ISO timestamp at decision time. */
   ts: string;

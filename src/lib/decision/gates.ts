@@ -23,6 +23,7 @@
  * Pure: no DB, no I/O. The pipeline orchestrator is the only consumer.
  */
 import { Gate, type DecisionContext, type GateResult } from "./types";
+import { estimateSlippage } from "./slippage";
 
 // ─── data quality ──────────────────────────────────────────────────────────
 
@@ -113,20 +114,59 @@ export function edgeGate(ctx: DecisionContext, cfg: EdgeConfig = {}): GateResult
   }
   const absEdge = Math.abs(rawEdge);
   const feeAdj = feeBps / 10_000;
-  const netEdge = absEdge - feeAdj;
+
+  // Slippage adjustment (Phase 15) — when an L2 order book is supplied
+  // in ctx.snapshot.orderBook, estimate realistic fill VWAP and subtract
+  // the impact (in price-pp) from edge. The edge gate's threshold is
+  // applied to the slippage-adjusted edge, NOT top-of-book.
+  let slippageAdj = 0;
+  let slippageDetails: Record<string, unknown> | undefined;
+  if (ctx.snapshot?.orderBook) {
+    const est = estimateSlippage(ctx.proposal.side, ctx.proposal.sizeUsd, ctx.snapshot.orderBook);
+    if (est.filled_size_usd > 0 && Number.isFinite(est.impact_bps)) {
+      // impact_bps → price-points (divide by 10_000); subtract from edge.
+      slippageAdj = est.impact_bps / 10_000;
+      slippageDetails = {
+        slippage_bps: est.impact_bps,
+        vwap: est.vwap,
+        top_of_book: est.top_of_book,
+        partial_fill: est.partial_fill,
+      };
+    } else if (est.partial_fill && est.filled_size_usd === 0) {
+      // Book has nothing on our side — reject outright.
+      return Gate.reject("edge", "no liquidity on requested side", { sideRequested: ctx.proposal.side });
+    }
+  }
+
+  const netEdge = absEdge - feeAdj - slippageAdj;
+  const details: Record<string, unknown> = { absEdge, feeAdj, netEdge, threshold, ...(slippageDetails ?? {}) };
 
   if (netEdge <= 0) {
-    return Gate.reject("edge", `edge ${(absEdge * 100).toFixed(2)}pp ≤ fee ${(feeAdj * 100).toFixed(2)}pp — no net edge`, { absEdge, feeAdj });
+    return Gate.reject(
+      "edge",
+      `edge ${(absEdge * 100).toFixed(2)}pp ≤ fee ${(feeAdj * 100).toFixed(2)}pp + slippage ${(slippageAdj * 100).toFixed(2)}pp — no net edge`,
+      details,
+    );
   }
   if (netEdge < threshold) {
     // Score linearly maps [0, threshold] → [0, 1].
     const score = Math.max(0, Math.min(1, netEdge / threshold));
-    return Gate.reduce("edge", score, `net edge ${(netEdge * 100).toFixed(2)}pp < threshold ${(threshold * 100).toFixed(2)}pp`, { netEdge, threshold });
+    return Gate.reduce(
+      "edge",
+      score,
+      `net edge ${(netEdge * 100).toFixed(2)}pp < threshold ${(threshold * 100).toFixed(2)}pp (after ${(feeAdj * 100).toFixed(2)}pp fee + ${(slippageAdj * 100).toFixed(2)}pp slip)`,
+      details,
+    );
   }
   // netEdge ≥ threshold — full score, capped at 1 with a soft ceiling above
   // 2× threshold (so 10pp on a 5pp threshold doesn't dominate the score).
   const score = Math.min(1, 0.8 + 0.2 * Math.min(1, (netEdge - threshold) / threshold));
-  return Gate.pass("edge", score, `net edge ${(netEdge * 100).toFixed(2)}pp ≥ threshold ${(threshold * 100).toFixed(2)}pp`, { netEdge, threshold });
+  return Gate.pass(
+    "edge",
+    score,
+    `net edge ${(netEdge * 100).toFixed(2)}pp ≥ threshold ${(threshold * 100).toFixed(2)}pp (after ${(feeAdj * 100).toFixed(2)}pp fee + ${(slippageAdj * 100).toFixed(2)}pp slip)`,
+    details,
+  );
 }
 
 // ─── risk ──────────────────────────────────────────────────────────────────
