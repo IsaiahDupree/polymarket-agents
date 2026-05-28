@@ -160,6 +160,11 @@ export default async function ArenaPage() {
             ))}
           </div>
         )}
+        <div className="mt-2 text-xs">
+          <Link href="/training" className="text-accent-blue hover:underline">
+            → Training status (self-evolution mechanisms · which agents are evolving now)
+          </Link>
+        </div>
       </div>
 
       {/* Live Polymarket portfolio — source of truth for real-money state.

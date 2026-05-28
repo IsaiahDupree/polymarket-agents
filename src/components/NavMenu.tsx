@@ -30,9 +30,10 @@ const GROUPS: NavGroup[] = [
   },
   {
     label: "Arena",
-    matches: ["/arena"],
+    matches: ["/arena", "/training"],
     items: [
       { href: "/arena", label: "Leaderboard", description: "Alive paper agents by fitness" },
+      { href: "/training", label: "Training status ★", description: "Self-evolution mechanisms + what's training now" },
       { href: "/arena/generations", label: "Generations", description: "Evolution timeline" },
       { href: "/arena/mutations", label: "Mutation cohorts", description: "Programmatic vs LLM" },
     ],
