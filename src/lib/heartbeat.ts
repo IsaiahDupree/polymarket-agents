@@ -19,6 +19,7 @@ export type SubsystemName =
   | "portfolio-snapshot"
   | "reconcile"
   | "ws-realtime"
+  | "late-scalp-observer"
   | "supervisor";
 
 export type HeartbeatStatus = {
@@ -50,6 +51,10 @@ export const DEFAULT_STALE_THRESHOLDS: Record<SubsystemName, number> = {
   "portfolio-snapshot": 28 * 60,
   reconcile: 45,
   "ws-realtime": 5,
+  // Long-running observer scans every 30s + writes heartbeat each scan.
+  // 10min stale = ~20 missed scans → process is dead. Supervisor flag
+  // is informational only (Task Scheduler's supervised wrapper restarts it).
+  "late-scalp-observer": 10,
   supervisor: 30,
 };
 

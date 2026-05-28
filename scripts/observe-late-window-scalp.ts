@@ -186,7 +186,9 @@ async function scanOnce() {
       }),
     });
   }
-  recordHeartbeat("snapshot-evolution", { scanner: "late-window-scalp-observe", scanned: binaries.length, found: foundThisScan });
+  // Dedicated observer heartbeat — separate from snapshot:evolution so
+  // the supervisor can detect when this loop dies specifically.
+  recordHeartbeat("late-scalp-observer", { scanned: binaries.length, found: foundThisScan, total_opportunities: stats.opportunities });
 }
 
 // ── Executor loop (uses worker's pollOnce; sim venue forced) ─────────
