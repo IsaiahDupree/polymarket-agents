@@ -207,15 +207,36 @@ export async function routeArenaSignal(
     },
   };
 
-  // Decision-pipeline SHADOW mode (Phase 2). When DECISION_PIPELINE_SHADOW=1,
-  // build a DecisionContext, run the pipeline, and journal the "would-have-
-  // decided" outcome — WITHOUT modifying the real trade flow. This gives us
-  // observability data to calibrate the pipeline before flipping it active
-  // in Phase 3 (DECISION_PIPELINE_ENABLED=1).
+  // ───────────────────────────────────────────────────────────────────────
+  // Decision-pipeline integration (Phases 2 + 3).
   //
-  // Wrapped in try/catch so pipeline misbehavior cannot abort a real order
-  // submit — pipeline failure logs to evolution_log and the real path continues.
-  if (process.env.DECISION_PIPELINE_SHADOW === "1") {
+  // SHADOW mode (DECISION_PIPELINE_SHADOW=1):
+  //   - Pipeline runs, decision is journaled, real trade flow is UNAFFECTED.
+  //   - Observability only — operator reviews /decisions before flipping active.
+  //
+  // ACTIVE mode (DECISION_PIPELINE_ENABLED=1):
+  //   - Pipeline result modulates the trade:
+  //       REJECTED / KILL_SWITCH      → return early, no submit
+  //       WATCHLIST                    → return early, paper-only (no submit)
+  //       APPROVED_REDUCED             → clamp order.size by size_multiplier
+  //       APPROVED_FULL                → submit unchanged
+  //
+  // PRE-FLIGHT before flipping ENABLED=1 (per implementation plan):
+  //   1. Shadow has run ≥24h with ≥10 journaled decisions
+  //   2. SELECT * FROM decision_journal WHERE approval_score IS NULL OR
+  //      gate_results_json = '' → 0 rows
+  //   3. Manually inspect 5 random REJECTED rows — every reason sensible
+  //   4. Manually inspect 5 random APPROVED_FULL rows — none would obviously
+  //      have been bad trades
+  //   5. apply-risk-budget.ts re-run immediately before flipping
+  //   6. RISK_STAKE_USD at low value ($2) so misbehaviour can't cost much
+  //
+  // BOTH modes are wrapped in try/catch — pipeline failure is non-fatal:
+  // logs to evolution_log and the original code path continues unchanged.
+  // ───────────────────────────────────────────────────────────────────────
+  const pipelineShadow = process.env.DECISION_PIPELINE_SHADOW === "1";
+  const pipelineEnabled = process.env.DECISION_PIPELINE_ENABLED === "1";
+  if (pipelineShadow || pipelineEnabled) {
     try {
       const decisionCtx: DecisionContext = {
         agentId,
@@ -235,10 +256,45 @@ export async function routeArenaSignal(
       };
       const decisionResult = runDecisionPipeline(decisionCtx);
       recordDecision(decisionCtx, decisionResult);
+
+      // ─── ACTIVE ENFORCEMENT ────────────────────────────────────────────
+      if (pipelineEnabled) {
+        // Short-circuit rejections + kill switch + watchlist.
+        if (decisionResult.decision === "KILL_SWITCH") {
+          insertEvolutionEvent({
+            event_type: "decision-pipeline-killswitch",
+            summary: `pipeline KILL_SWITCH on capsule ${capsule.id.slice(0, 8)} — order blocked`,
+            payload_json: JSON.stringify({ decision: decisionResult, capsule_id: capsule.id, agent_id: agentId }),
+          });
+          return { ok: false, code: "DECISION_KILL_SWITCH", reason: "decision pipeline triggered KILL_SWITCH — system halt" };
+        }
+        if (decisionResult.decision === "REJECTED") {
+          return { ok: false, code: "DECISION_REJECTED", reason: `decision pipeline rejected (score ${decisionResult.approval_score.toFixed(2)})` };
+        }
+        if (decisionResult.decision === "WATCHLIST") {
+          return { ok: false, code: "DECISION_WATCHLIST", reason: `decision pipeline → watchlist only (score ${decisionResult.approval_score.toFixed(2)}) — no live submit` };
+        }
+        // APPROVED_REDUCED → clamp size by size_multiplier. APPROVED_FULL falls through.
+        if (decisionResult.decision === "APPROVED_REDUCED" && decisionResult.size_multiplier < 1) {
+          const newSize = order.size * decisionResult.size_multiplier;
+          if (newSize <= 0) {
+            return { ok: false, code: "DECISION_REJECTED", reason: `size_multiplier ${decisionResult.size_multiplier} would zero the order` };
+          }
+          order.size = newSize;
+          // sizeUsd in metadata is what the polymarket adapter reads as the
+          // authoritative source for MARKET notional — must reflect the clamp.
+          const metaAsRecord = order.metadata as Record<string, unknown>;
+          if (typeof metaAsRecord.sizeUsd === "number") {
+            metaAsRecord.sizeUsd = newSize;
+          }
+        }
+      }
     } catch (err) {
+      // Defensive: pipeline failure is non-fatal. Log + continue with the
+      // original order so the per-capsule + risk-engine layers still enforce.
       insertEvolutionEvent({
-        event_type: "decision-pipeline-shadow-error",
-        summary: `pipeline shadow failed (non-fatal): ${(err as Error).message?.slice(0, 200)}`,
+        event_type: pipelineEnabled ? "decision-pipeline-active-error" : "decision-pipeline-shadow-error",
+        summary: `pipeline ${pipelineEnabled ? "active" : "shadow"} failed (non-fatal): ${(err as Error).message?.slice(0, 200)}`,
         payload_json: JSON.stringify({ capsule_id: capsule.id, agent_id: agentId, market_id }),
       });
     }
