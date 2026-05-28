@@ -445,13 +445,14 @@ describe("runDecisionPipeline", () => {
     expect(result.decision_ts).toBe("2026-01-01T00:00:00Z");
   });
 
-  it("returns at least 6 gate results in canonical order", () => {
+  it("returns gate results in canonical order (with signal_agreement after regime)", () => {
     const result = runDecisionPipeline(mkCtx(), { skipGovernor: true });
     const gates = result.gate_results.map((g) => g.gate);
     expect(gates).toEqual([
       "data_quality",
       "market_eligibility",
       "regime",
+      "signal_agreement",
       "edge",
       "risk",
       "execution",

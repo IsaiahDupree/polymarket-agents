@@ -38,6 +38,7 @@ import {
   type MarketEligibilityConfig,
 } from "./gates";
 import { governorGate } from "./gates/governor";
+import { signalAgreementGate } from "./gates/signal-agreement";
 import { classifyRegime, regimeFitScore, type Regime } from "./regime";
 import { finalizeDecision } from "./score";
 import { Gate, type DecisionContext, type DecisionResult, type GateResult } from "./types";
@@ -74,7 +75,11 @@ export function runDecisionPipeline(
   // 3. Regime — classifier + match against strategy preference
   gateResults.push(buildRegimeResult(ctx, opts.strategyRegimes ?? ["any"]));
 
-  // 4. Edge
+  // 4. Signal-agreement — counts UNIQUE independent signal clusters
+  //    (Phase 14). Strategies attach signals[] to proposal.metadata.
+  gateResults.push(signalAgreementGate(ctx));
+
+  // 5. Edge
   gateResults.push(edgeGate(ctx, opts.edge));
 
   // 5. Risk (v1 stub for per-trade — capsules/gate.ts + risk/engine.ts still
