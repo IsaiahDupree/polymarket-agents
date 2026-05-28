@@ -28,6 +28,15 @@ export function makeMemoryDb(): Database.Database {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_paper_agents_elite ON paper_agents(is_elite, alive);`);
   ensureColumn(db, "poly_binaries", "event_slug", "event_slug TEXT");
   ensureColumn(db, "market_snapshots", "category", "category TEXT");
+  // Phase 6: capsule diversity profile columns (additive, all nullable).
+  ensureColumn(db, "capsules", "strategy_family",        "strategy_family TEXT");
+  ensureColumn(db, "capsules", "asset_class",            "asset_class TEXT");
+  ensureColumn(db, "capsules", "allowed_assets_json",    "allowed_assets_json TEXT");
+  ensureColumn(db, "capsules", "time_horizon",           "time_horizon TEXT");
+  ensureColumn(db, "capsules", "regime_dependency",      "regime_dependency TEXT");
+  ensureColumn(db, "capsules", "directional_bias",       "directional_bias TEXT");
+  ensureColumn(db, "capsules", "diversity_profile_json", "diversity_profile_json TEXT");
+  ensureColumn(db, "capsules", "diversity_confidence",   "diversity_confidence TEXT NOT NULL DEFAULT 'inferred'");
   db.exec(`
     CREATE TABLE IF NOT EXISTS realtime_ticks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

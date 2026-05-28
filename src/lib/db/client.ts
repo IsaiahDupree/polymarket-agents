@@ -97,6 +97,30 @@ function runLightMigrations(handle: Database.Database): void {
       CREATE INDEX IF NOT EXISTS idx_order_events_created ON order_events(created_at DESC);
     `);
   }
+
+  // 2026-05-27 (Phase 6): capsule diversity profile columns. Additive, all
+  // nullable — existing capsules continue to work without these populated.
+  // Populated by scripts/infer-capsule-diversity.ts post-migration.
+  for (const [col, ddl] of [
+    ["strategy_family",        "strategy_family TEXT"],
+    ["asset_class",            "asset_class TEXT"],
+    ["allowed_assets_json",    "allowed_assets_json TEXT"],
+    ["time_horizon",           "time_horizon TEXT"],
+    ["regime_dependency",      "regime_dependency TEXT"],
+    ["directional_bias",       "directional_bias TEXT"],
+    ["diversity_profile_json", "diversity_profile_json TEXT"],
+    ["diversity_confidence",   "diversity_confidence TEXT NOT NULL DEFAULT 'inferred'"],
+  ] as const) {
+    if (!hasColumn("capsules", col)) {
+      handle.exec(`ALTER TABLE capsules ADD COLUMN ${ddl};`);
+    }
+  }
+  handle.exec(
+    `CREATE INDEX IF NOT EXISTS idx_capsules_strategy_family ON capsules(strategy_family) WHERE strategy_family IS NOT NULL;`,
+  );
+  handle.exec(
+    `CREATE INDEX IF NOT EXISTS idx_capsules_asset_class ON capsules(asset_class) WHERE asset_class IS NOT NULL;`,
+  );
 }
 
 export function closeDb() {

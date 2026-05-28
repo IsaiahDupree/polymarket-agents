@@ -81,7 +81,8 @@
     "backtest:binaries": "tsx scripts/backtest-binaries.ts",
     "reconcile:poly": "tsx scripts/reconcile-polymarket-fills.ts",
     "arena:promote-live": "tsx scripts/promote-to-live.ts",
-    "bridge:to-polymarket": "tsx scripts/bridge-eth-to-polymarket.ts"
+    "bridge:to-polymarket": "tsx scripts/bridge-eth-to-polymarket.ts",
+    "infer:capsule-diversity": "tsx scripts/infer-capsule-diversity.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.98.0",

@@ -40,13 +40,34 @@ export default async function ArenaPage() {
   // global ALLOW_TRADE gate — a `live`-status capsule with ALLOW_TRADE unset
   // still routes through the live router but execute.ts returns DRY_RUN.
   const liveCapsules = db().prepare(
-    `SELECT id, paper_agent_id, status, capital_allocated_usd, current_pnl_usd, daily_pnl_usd, trades_today
+    `SELECT id, name, paper_agent_id, status, capital_allocated_usd, current_pnl_usd, daily_pnl_usd, trades_today,
+            strategy_family, asset_class, regime_dependency, time_horizon, directional_bias
        FROM capsules
       WHERE status IN ('live', 'paper') AND paper_agent_id IS NOT NULL`,
-  ).all() as Array<{ id: string; paper_agent_id: number; status: string; capital_allocated_usd: number; current_pnl_usd: number; daily_pnl_usd: number; trades_today: number }>;
+  ).all() as Array<{
+    id: string; name: string; paper_agent_id: number; status: string;
+    capital_allocated_usd: number; current_pnl_usd: number; daily_pnl_usd: number; trades_today: number;
+    strategy_family: string | null; asset_class: string | null; regime_dependency: string | null;
+    time_horizon: string | null; directional_bias: string | null;
+  }>;
   const capsuleByAgent = new Map<number, typeof liveCapsules[number]>();
   for (const c of liveCapsules) capsuleByAgent.set(c.paper_agent_id, c);
   const allowTradeLive = process.env.ALLOW_TRADE === "1";
+
+  // Portfolio-diversity diagnostic — counts capsules by strategy_family +
+  // regime_dependency so the operator instantly sees "are these capsules
+  // actually different strategies, or one strategy in N costumes?"
+  // (Surfaces the concrete failure mode the PRD targets.)
+  const diversityCounts = new Map<string, number>();
+  for (const c of liveCapsules) {
+    const fam = c.strategy_family ?? "unknown";
+    const reg = c.regime_dependency ?? "any";
+    const key = `${fam}/${reg}`;
+    diversityCounts.set(key, (diversityCounts.get(key) ?? 0) + 1);
+  }
+  const diversitySummary = Array.from(diversityCounts.entries()).sort((a, b) => b[1] - a[1]);
+  const totalLiveCapsules = liveCapsules.length;
+  const distinctFamilies = new Set(liveCapsules.map((c) => c.strategy_family ?? "unknown")).size;
 
   // All-time top agents (any gen, dead or alive) by net PnL — shown above the
   // current-gen leaderboard so freshly-bred 0-trade agents don't drown out the
@@ -139,6 +160,66 @@ export default async function ArenaPage() {
        *  actual fills + unrealized P/L first, before sim fitness rankings. */}
       <LivePortfolioCard funderAddress={process.env.POLYMARKET_FUNDER_ADDRESS ?? ""} />
 
+      {/* Portfolio-diversity diagnostic — surfaces "N live capsules, M distinct
+       *  strategy families." Red border when totalLiveCapsules > distinctFamilies
+       *  (i.e. some family has >1 capsule, meaning at least two capsules are
+       *  effectively the same strategy in different costumes). This is the
+       *  exact failure mode the capsule-portfolio-governance PRD targets. */}
+      {totalLiveCapsules > 0 && (
+        <section
+          className={`card ${
+            totalLiveCapsules > distinctFamilies
+              ? "border-accent-red/40 bg-accent-red/5"
+              : "border-accent-green/30"
+          }`}
+        >
+          <div className="flex items-baseline justify-between mb-2">
+            <h2 className="card-title m-0">
+              Portfolio diversity{" "}
+              <span className="text-xs text-zinc-500 font-normal ml-1">
+                ({distinctFamilies} distinct {distinctFamilies === 1 ? "family" : "families"} across {totalLiveCapsules} live {totalLiveCapsules === 1 ? "capsule" : "capsules"})
+              </span>
+            </h2>
+            {totalLiveCapsules > distinctFamilies ? (
+              <span className="text-[10px] text-accent-red">
+                ⚠️ correlated risk — some capsules share strategy family
+              </span>
+            ) : (
+              <span className="text-[10px] text-accent-green">✓ all capsules distinct</span>
+            )}
+          </div>
+          <p className="text-xs text-zinc-400 mb-3">
+            A family with multiple capsules means those capsules will lose
+            together on the strategy's bad day. The correlation engine + cluster
+            kill switches (Phase 7+8) will quantify this; for now, see the
+            distribution at a glance. Profiles inferred from each capsule's
+            bound strategy kind.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {diversitySummary.map(([key, count]) => {
+              const [family, regime] = key.split("/");
+              const tooClustered = count > 1;
+              return (
+                <span
+                  key={key}
+                  className={`inline-flex items-center text-xs px-2 py-1 rounded border ${
+                    tooClustered
+                      ? "bg-accent-red/15 text-accent-red border-accent-red/50"
+                      : "bg-zinc-800 text-zinc-300 border-zinc-700"
+                  }`}
+                  title={`${count} capsule(s) with strategy_family=${family}, regime=${regime}`}
+                >
+                  <span className="font-mono">{family}</span>
+                  <span className="text-zinc-500 mx-1">·</span>
+                  <span className="text-zinc-500">{regime}</span>
+                  <span className="ml-2 text-zinc-400">×{count}</span>
+                </span>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
       <section className="grid grid-cols-5 gap-4">
         <Stat label="Alive agents" value={ranked.length.toString()} />
         <Stat label="Generations sealed" value={gens.filter((g) => g.sealed_at != null).length.toString()} />
@@ -197,6 +278,12 @@ export default async function ArenaPage() {
                               ? `LIVE: $${capsule.capital_allocated_usd} capital, capsule ${capsule.id.slice(0, 8)} — real orders armed`
                               : `Paper-live: $${capsule.capital_allocated_usd} capital, capsule ${capsule.id.slice(0, 8)} — orders DRY_RUN (ALLOW_TRADE unset)`}
                           >{allowTradeLive ? "💰 LIVE" : "📝 PAPER"}</span>
+                        )}
+                        {capsule?.strategy_family && (
+                          <span
+                            className="inline-flex items-center text-[10px] leading-none px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700 font-mono"
+                            title={`Diversity profile (inferred): family=${capsule.strategy_family} · regime=${capsule.regime_dependency ?? "any"} · horizon=${capsule.time_horizon ?? "—"} · bias=${capsule.directional_bias ?? "—"}`}
+                          >{capsule.strategy_family}</span>
                         )}
                       </div>
                     </td>

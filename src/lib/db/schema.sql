@@ -328,6 +328,18 @@ CREATE TABLE IF NOT EXISTS capsules (
   open_position_qty           REAL NOT NULL DEFAULT 0.0,
   open_position_cost_usd      REAL NOT NULL DEFAULT 0.0,
   daily_pnl_reset_date        TEXT,
+  -- Diversity profile (Phase 6 of gated-decision-system PRD).
+  -- Populated by scripts/infer-capsule-diversity.ts from the bound agent's
+  -- genome kind. Operator can override via UI to lock against re-inference.
+  -- Used by: correlation engine, cluster kill switches, global risk governor.
+  strategy_family             TEXT,                             -- momentum|mean_reversion|vol_breakout|market_neutral|consensus|scrape|directional|market_making|oracle|experimental|reserve
+  asset_class                 TEXT,                             -- crypto|equity|macro|stable|prediction_market
+  allowed_assets_json         TEXT,                             -- subset of asset_class, e.g. ["BTC","ETH"]
+  time_horizon                TEXT,                             -- 1m|5m|15m|1h|1d|to_resolution
+  regime_dependency           TEXT,                             -- trending|chop|high_vol|low_vol|breakout|any
+  directional_bias            TEXT,                             -- long_only|short_only|long_short|neutral
+  diversity_profile_json      TEXT,                             -- escape hatch for richer metadata
+  diversity_confidence        TEXT NOT NULL DEFAULT 'inferred', -- inferred|operator_set
   -- Lifecycle
   created_at                  TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at                  TEXT NOT NULL DEFAULT (datetime('now')),
@@ -335,6 +347,9 @@ CREATE TABLE IF NOT EXISTS capsules (
 );
 CREATE INDEX IF NOT EXISTS idx_capsules_agent ON capsules(agent_id);
 CREATE INDEX IF NOT EXISTS idx_capsules_status ON capsules(status);
+-- Diversity-profile indexes (idx_capsules_strategy_family, idx_capsules_asset_class)
+-- are created in runLightMigrations() so they only run after the ALTER TABLEs
+-- that add the columns on pre-existing DBs.
 
 -- ============================================================================
 -- Order events — append-only execution log (pattern from TradingBot router)
