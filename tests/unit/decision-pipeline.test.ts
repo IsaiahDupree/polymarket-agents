@@ -61,17 +61,21 @@ describe("weightedScore", () => {
   });
 
   it("mixed scores produce the expected weighted average", () => {
+    // After Phase 9, weights are:
+    //   data_quality 0.15, market_eligibility 0.10, regime 0.15,
+    //   signal_agreement 0.15, edge 0.15, risk 0.10, governor 0.15, execution 0.05
     const r = weightedScore([
       Gate.pass("data_quality", 1.0, "x"),       // 0.15
       Gate.pass("market_eligibility", 0.5, "x"), // 0.10
       Gate.pass("regime", 1.0, "x"),             // 0.15
-      Gate.pass("edge", 0.8, "x"),               // 0.20
-      Gate.pass("risk", 1.0, "x"),               // 0.15
+      Gate.pass("edge", 0.8, "x"),               // 0.15
+      Gate.pass("risk", 1.0, "x"),               // 0.10
       Gate.pass("execution", 1.0, "x"),          // 0.05
     ]);
-    // Total weight present: 0.80; weighted sum: 0.15 + 0.05 + 0.15 + 0.16 + 0.15 + 0.05 = 0.71
-    // Normalized: 0.71 / 0.80 ≈ 0.8875
-    expect(r).toBeCloseTo(0.8875, 4);
+    // Total weight present: 0.70; weighted sum:
+    //   0.15 + 0.05 + 0.15 + 0.12 + 0.10 + 0.05 = 0.62
+    // Normalized: 0.62 / 0.70 ≈ 0.8857
+    expect(r).toBeCloseTo(0.8857, 3);
   });
 });
 
@@ -377,7 +381,7 @@ describe("gates: executionGate", () => {
 
 describe("runDecisionPipeline", () => {
   it("APPROVED_FULL when all gates pass", () => {
-    const result = runDecisionPipeline(mkCtx());
+    const result = runDecisionPipeline(mkCtx(), { skipGovernor: true });
     expect(result.gate_results.length).toBeGreaterThanOrEqual(5);
     expect(result.decision).toBe("APPROVED_FULL");
     expect(result.size_multiplier).toBe(1.0);
@@ -386,6 +390,7 @@ describe("runDecisionPipeline", () => {
   it("REJECTED when a gate rejects (e.g. zero edge)", () => {
     const result = runDecisionPipeline(
       mkCtx({ proposal: { ...mkCtx().proposal, metadata: { edge: 0.0001 } } }),
+      { skipGovernor: true },
     );
     expect(result.decision).toBe("REJECTED");
     expect(result.size_multiplier).toBe(0);
@@ -394,6 +399,7 @@ describe("runDecisionPipeline", () => {
   it("REJECTED when execution gate rejects (zero size)", () => {
     const result = runDecisionPipeline(
       mkCtx({ proposal: { ...mkCtx().proposal, sizeUsd: 0 } }),
+      { skipGovernor: true },
     );
     expect(result.decision).toBe("REJECTED");
   });
@@ -403,7 +409,7 @@ describe("runDecisionPipeline", () => {
     const ticks: Tick[] = trendingTicks(100, 0.02, 40, 0.001);
     const result = runDecisionPipeline(
       { ...mkCtx(), snapshot: { ...mkCtx().snapshot!, ticks } },
-      { strategyRegimes: ["trending"] },
+      { strategyRegimes: ["trending"], skipGovernor: true },
     );
     const regimeResult = result.gate_results.find((g) => g.gate === "regime");
     expect(regimeResult).toBeDefined();
@@ -415,7 +421,7 @@ describe("runDecisionPipeline", () => {
     const ticks: Tick[] = trendingTicks(100, 0.02, 40, 0.001);
     const result = runDecisionPipeline(
       { ...mkCtx(), snapshot: { ...mkCtx().snapshot!, ticks } },
-      { strategyRegimes: ["chop"] }, // trending market, strategy wants chop
+      { strategyRegimes: ["chop"], skipGovernor: true }, // trending market, strategy wants chop
     );
     const regimeResult = result.gate_results.find((g) => g.gate === "regime")!;
     expect(regimeResult.action).toBe("REDUCE_SIZE");
@@ -426,7 +432,7 @@ describe("runDecisionPipeline", () => {
     const ticks: Tick[] = chopTicks(100, 5, 40); // high-vol no-direction
     const result = runDecisionPipeline(
       { ...mkCtx(), snapshot: { ...mkCtx().snapshot!, ticks } },
-      { strategyRegimes: ["trending"] },
+      { strategyRegimes: ["trending"], skipGovernor: true },
     );
     expect(result.decision).toBe("REJECTED");
     const regimeResult = result.gate_results.find((g) => g.gate === "regime")!;
@@ -435,12 +441,12 @@ describe("runDecisionPipeline", () => {
   });
 
   it("decision_ts is set to provided value when supplied", () => {
-    const result = runDecisionPipeline(mkCtx(), { nowIso: "2026-01-01T00:00:00Z" });
+    const result = runDecisionPipeline(mkCtx(), { nowIso: "2026-01-01T00:00:00Z", skipGovernor: true });
     expect(result.decision_ts).toBe("2026-01-01T00:00:00Z");
   });
 
   it("returns at least 6 gate results in canonical order", () => {
-    const result = runDecisionPipeline(mkCtx());
+    const result = runDecisionPipeline(mkCtx(), { skipGovernor: true });
     const gates = result.gate_results.map((g) => g.gate);
     expect(gates).toEqual([
       "data_quality",

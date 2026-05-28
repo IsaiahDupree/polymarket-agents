@@ -164,9 +164,10 @@ export const DEFAULT_GATE_WEIGHTS: GateWeights = {
   data_quality: 0.15,
   market_eligibility: 0.10,
   regime: 0.15,
-  signal_agreement: 0.20,
-  edge: 0.20,
-  risk: 0.15,
+  signal_agreement: 0.15,
+  edge: 0.15,
+  risk: 0.10,
+  governor: 0.15,
   execution: 0.05,
 };
 

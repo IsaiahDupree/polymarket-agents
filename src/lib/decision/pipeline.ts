@@ -37,6 +37,7 @@ import {
   type EdgeConfig,
   type MarketEligibilityConfig,
 } from "./gates";
+import { governorGate } from "./gates/governor";
 import { classifyRegime, regimeFitScore, type Regime } from "./regime";
 import { finalizeDecision } from "./score";
 import { Gate, type DecisionContext, type DecisionResult, type GateResult } from "./types";
@@ -50,6 +51,12 @@ export type PipelineOptions = {
   edge?: EdgeConfig;
   /** Force a fixed decision timestamp (for tests). */
   nowIso?: string;
+  /**
+   * Skip the governor gate (Phase 9). Useful for unit tests that don't
+   * want to spin up a DB connection. Default false in prod — every real
+   * pipeline call goes through the governor.
+   */
+  skipGovernor?: boolean;
 };
 
 export function runDecisionPipeline(
@@ -70,10 +77,30 @@ export function runDecisionPipeline(
   // 4. Edge
   gateResults.push(edgeGate(ctx, opts.edge));
 
-  // 5. Risk (v1 stub; Phase 9 wraps the Global Risk Governor)
+  // 5. Risk (v1 stub for per-trade — capsules/gate.ts + risk/engine.ts still
+  // enforce independently; governor handles portfolio-level checks below)
   gateResults.push(riskGate(ctx));
 
-  // 6. Execution
+  // 6. Governor — Global Risk Governor (Phase 9): same-trade collision,
+  // correlated-exposure cap, strategy-family cap, reserve floor.
+  if (!opts.skipGovernor) {
+    try {
+      gateResults.push(governorGate(ctx));
+    } catch (err) {
+      // Defensive: any DB / load failure → log a permissive pass so the
+      // pipeline doesn't blow up on transient infra issues. The per-capsule
+      // gates still enforce their own limits.
+      gateResults.push({
+        gate: "governor",
+        status: "partial",
+        score: 0.7,
+        action: "WAIT",
+        reason: `governor unavailable (${(err as Error).message?.slice(0, 100)})`,
+      });
+    }
+  }
+
+  // 7. Execution
   gateResults.push(executionGate(ctx));
 
   // Signal-agreement is a future v2 work item (PRD §6 — cross-strategy
