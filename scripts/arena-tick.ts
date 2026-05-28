@@ -20,6 +20,7 @@ import { findLiveCapsuleForPaperAgent, refreshCapsuleRealtime, routeArenaSignal,
 import { applyRiskRails } from "../src/lib/arena/risk-wrapper.ts";
 import { warmOracleCacheForTick } from "../src/lib/arena/oracle-warmer.ts";
 import { resolveExpiredBinaries } from "../src/lib/arena/binary-resolver.ts";
+import { recordHeartbeat } from "../src/lib/heartbeat.ts";
 
 const EVOLVE_EVERY = Number(process.env.ARENA_EVOLVE_EVERY ?? "50");
 
@@ -160,10 +161,22 @@ const EVOLVE_EVERY = Number(process.env.ARENA_EVOLVE_EVERY ?? "50");
   const capsuleSuffix = capsuleRows.length > 0 ? ` capsules=${capsuleRows.length}` : "";
   console.log(`arena:tick gen=${gen.gen_number} agents=${agents.length}${eliteSuffix}${capsuleSuffix} → entries=${stats.entries} exits=${stats.exits} holds=${stats.holds} live=${stats.live_fills}/${stats.live_rejects + stats.live_fills}${railStr}${settleStr}  tick=${tickCount}/${EVOLVE_EVERY}`);
 
+  // Heartbeat — let the supervisor know this subsystem is alive.
+  recordHeartbeat("arena-tick", {
+    gen: gen.gen_number,
+    tick_count: tickCount,
+    agents_ticked: agents.length,
+    entries: stats.entries,
+    exits: stats.exits,
+    live_fills: stats.live_fills,
+    live_rejects: stats.live_rejects,
+  });
+
   // Auto-evolve trigger
   if (EVOLVE_EVERY > 0 && tickCount >= EVOLVE_EVERY) {
     console.log(`arena:tick → auto-evolve triggered (tick_count=${tickCount} >= ARENA_EVOLVE_EVERY=${EVOLVE_EVERY})`);
     const result = await runEvolveOnce();
+    recordHeartbeat("arena-evolve", { result_skipped: "skipped" in result ? result.skipped : null });
     if ("skipped" in result) {
       console.log(`auto-evolve skipped: ${result.skipped}`);
     } else {

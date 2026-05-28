@@ -25,6 +25,7 @@ import {
   type ClusterTripEvent,
 } from "@/lib/arena/cluster-aware-breeding";
 import { inferDiversityProfile } from "@/lib/capsules/diversity-inference";
+import { readHeartbeatStatus } from "@/lib/heartbeat";
 
 export const dynamic = "force-dynamic";
 
@@ -154,6 +155,59 @@ export default async function TrainingPage() {
           What agents are training right now, and what the self-evolution mechanisms are doing about it.
         </p>
       </section>
+
+      {/* Heartbeat health — supervisor + each subsystem's last seen ts */}
+      {(() => {
+        const heartbeats = readHeartbeatStatus(["arena-tick", "arena-evolve", "snapshot-evolution", "portfolio-snapshot", "reconcile", "supervisor"]);
+        const anyStale = heartbeats.some((h) => h.is_stale);
+        return (
+          <section className={`card ${anyStale ? "border-accent-red/40 bg-accent-red/5" : "border-accent-green/30"}`}>
+            <div className="flex items-baseline justify-between mb-2">
+              <h2 className="card-title m-0">
+                Subsystem heartbeats
+                <span className={`text-[10px] ml-2 ${anyStale ? "text-accent-red" : "text-accent-green"}`}>
+                  {anyStale ? `⚠ ${heartbeats.filter((h) => h.is_stale).length} stale` : "✓ all fresh"}
+                </span>
+              </h2>
+              <span className="text-[10px] text-zinc-500">
+                supervisor auto-recovers stale subsystems every 5min
+              </span>
+            </div>
+            <table className="list w-full">
+              <thead>
+                <tr className="text-xs text-zinc-500">
+                  <th className="text-left">Subsystem</th>
+                  <th className="text-right">Last heartbeat</th>
+                  <th className="text-right">Stale after</th>
+                  <th>State</th>
+                </tr>
+              </thead>
+              <tbody>
+                {heartbeats.map((h) => (
+                  <tr key={h.subsystem} className="text-xs">
+                    <td className="font-mono text-zinc-300">{h.subsystem}</td>
+                    <td className="text-right tabular-nums text-zinc-400">
+                      {h.age_minutes === null ? "never" : `${h.age_minutes < 60 ? `${h.age_minutes.toFixed(1)}m` : `${(h.age_minutes / 60).toFixed(1)}h`} ago`}
+                    </td>
+                    <td className="text-right tabular-nums text-zinc-500">{h.stale_after_minutes}m</td>
+                    <td className={`text-xs ${h.is_stale ? "text-accent-red" : "text-accent-green"}`}>
+                      {h.is_stale ? "⚠ stale" : "✓ fresh"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="text-[11px] text-zinc-500 mt-3">
+              Install the supervisor:{" "}
+              <code className="text-zinc-300">
+                powershell scripts/scheduler/install-supervisor.ps1
+              </code>
+              {" · "}
+              Manual run: <code className="text-zinc-300">npm run supervisor</code>
+            </p>
+          </section>
+        );
+      })()}
 
       {/* ── Gen status ─────────────────────────────────────────────── */}
       <section className={`card ${latestGen?.sealed_at === null ? "border-accent-green/30" : isStale ? "border-accent-red/40 bg-accent-red/5" : "border-zinc-700"}`}>

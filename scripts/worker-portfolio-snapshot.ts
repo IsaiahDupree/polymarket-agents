@@ -30,6 +30,7 @@ import {
   type DailyPnlPoint,
   type VerdictThresholds,
 } from "../src/lib/portfolio/correlation.ts";
+import { recordHeartbeat } from "../src/lib/heartbeat.ts";
 
 type Args = { windowDays: number; dryRun: boolean; minSamples: number };
 
@@ -220,6 +221,13 @@ function main() {
   console.log(`  verdicts: diversified=${stats.verdicts.diversified}  correlated_safe=${stats.verdicts.correlated_safe}  too_similar=${stats.verdicts.too_similar}`);
 
   if (args.dryRun) console.log("\n  (dry-run — no DB writes)");
+  else {
+    recordHeartbeat("portfolio-snapshot", {
+      capsules_snapshotted: snap.snapshotted,
+      pairs_computed: stats.pairs,
+      verdicts: stats.verdicts,
+    });
+  }
 }
 
 main();

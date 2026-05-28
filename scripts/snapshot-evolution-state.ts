@@ -23,6 +23,7 @@
 import "./_env.ts";
 import { db as openDb } from "../src/lib/db/client.ts";
 import { insertEvolutionEvent } from "../src/lib/db/queries.ts";
+import { recordHeartbeat } from "../src/lib/heartbeat.ts";
 import {
   decideKindEligibility,
   eligibleKinds,
@@ -159,6 +160,13 @@ function main() {
     event_type: "evolution-state-snapshot",
     summary: `Snapshot: A=${aEnabled ? "on" : "off"} (${snapshot.a_dynamic_blacklist.eligible_now.length} eligible) · B=${bEnabled ? "on" : "off"} (${trips.length} trips, ${breedingWeights.size} weighted families) · gen ${gen?.gen_number ?? "?"} ${gen?.sealed_at === null ? "OPEN" : "sealed"}`,
     payload_json: JSON.stringify(snapshot),
+  });
+  recordHeartbeat("snapshot-evolution", {
+    a_enabled: aEnabled,
+    b_enabled: bEnabled,
+    eligible_count: snapshot.a_dynamic_blacklist.eligible_now.length,
+    blacklisted_count: snapshot.a_dynamic_blacklist.blacklisted_now.length,
+    breeding_weights_count: breedingWeights.size,
   });
   console.log("\n  → wrote evolution-state-snapshot row.");
 }
