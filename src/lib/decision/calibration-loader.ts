@@ -1,15 +1,18 @@
 /**
  * DB-side loader: pulls decision_journal rows + joins to trade outcomes.
  *
- * v1 outcome definition:
- *   - For decisions with order_id matching a fill in `trades` (live) or
- *     `paper_trades` (sim): `won = realized_pnl_usd > 0`.
- *   - For decisions with NO matching order (WATCHLIST / REJECTED): excluded
- *     (counterfactual data; we don't know what would have happened).
+ * Outcome bridges (v1):
+ *   - LIVE trades:  decision_journal.order_id → trades.order_id, won = pnl_usd > 0
+ *   - PAPER trades: match by (agent_id → paper_agent_id, symbol → market_id,
+ *                  intent='exit', tick_at ≥ decision.ts), won = realized_pnl_usd > 0
+ *   - Decisions with no matching exit trade (WATCHLIST / REJECTED / not-yet-
+ *     closed entries): excluded — no outcome to evaluate.
  *
- * v2 work item: include counterfactual data by replaying the paper trade
- * the strategy would have placed if the pipeline had approved — but that
- * requires the sim engine to record "shadow paper trades" alongside real ones.
+ * Win definition: realized PnL on the EXIT row (round-trip) is positive.
+ *
+ * v2 work item: replay the counterfactual paper trade the strategy would
+ * have placed if the pipeline had approved (lets us calibrate REJECTED
+ * decisions too). Requires sim engine to record shadow-paper trades.
  */
 import { db } from "@/lib/db/client";
 import type { LabeledDecision } from "./calibration";
@@ -29,22 +32,22 @@ export type CalibrationLoaderQuery = {
  * Pulls journal rows with matching trade outcomes. Returns labeled rows
  * that can be fed directly to `buildCalibrationReport()`.
  *
- * Join strategy: LEFT JOIN against paper_trades.client_order_id =
- * decision_journal.order_id. Rows without a matching paper_trade are
- * dropped (no outcome to evaluate).
+ * Bridges:
+ *   - LIVE: LEFT JOIN trades ON trades.order_id = decision_journal.order_id
+ *           (LIVE order goes through the venue router; trades table carries
+ *            pnl_usd on the exit row matched by intent='exit')
+ *   - PAPER: LEFT JOIN paper_trades ON paper_trades.paper_agent_id =
+ *           decision_journal.agent_id AND market_id = symbol AND
+ *           intent='exit' AND tick_at >= decision.ts
  *
- * Win definition: realized_pnl_usd > 0 on the EXIT trade (round-trip).
- * Entry trades that haven't exited yet are excluded.
+ * A decision's win-flag = (any positive realized PnL across either bridge).
  */
 export function loadLabeledDecisions(q: CalibrationLoaderQuery = {}): LabeledDecision[] {
   const since = q.sinceTs ?? new Date(Date.now() - 30 * 86_400_000).toISOString();
   const limit = Math.min(Math.max(10, q.limit ?? 1000), 10_000);
 
-  // Match decision rows to paper_trades by order_id. For Phase 13 v1 we
-  // restrict to executed decisions (order_id IS NOT NULL). The realized
-  // PnL comes from the EXIT trade (kind = 'exit'); we sum if multiple.
   const params: Record<string, unknown> = { since, limit };
-  const filters: string[] = ["d.ts >= @since", "d.order_id IS NOT NULL"];
+  const filters: string[] = ["d.ts >= @since"];
   if (q.strategyKind) {
     filters.push("d.strategy_kind = @strategy_kind");
     params.strategy_kind = q.strategyKind;
@@ -54,18 +57,30 @@ export function loadLabeledDecisions(q: CalibrationLoaderQuery = {}): LabeledDec
     params.capsule_id = q.capsuleId;
   }
 
-  // paper_trades schema check: client_order_id, realized_pnl_usd, kind
-  // (kind='exit' rows carry the realized pnl for the round trip).
+  // Sum realized PnL across BOTH bridges. A row is labeled if EITHER
+  // produced an exit row.
   const rows = db()
     .prepare(
       `SELECT
          d.id, d.approval_score, d.decision, d.strategy_kind, d.capsule_id,
-         COALESCE(SUM(CASE WHEN pt.kind = 'exit' THEN pt.realized_pnl_usd ELSE 0 END), 0) AS realized_pnl
+         COALESCE(SUM(CASE WHEN t.intent = 'exit' THEN t.pnl_usd ELSE 0 END), 0) AS live_pnl,
+         COALESCE(SUM(CASE WHEN pt.intent = 'exit' THEN pt.realized_pnl_usd ELSE 0 END), 0) AS paper_pnl,
+         SUM(CASE WHEN t.intent = 'exit' THEN 1 ELSE 0 END) AS live_exits,
+         SUM(CASE WHEN pt.intent = 'exit' THEN 1 ELSE 0 END) AS paper_exits
        FROM decision_journal d
-       LEFT JOIN paper_trades pt ON pt.client_order_id = d.order_id
+       LEFT JOIN trades t
+         ON d.order_id IS NOT NULL
+        AND t.order_id = d.order_id
+        AND t.intent = 'exit'
+       LEFT JOIN paper_trades pt
+         ON d.agent_id IS NOT NULL
+        AND pt.paper_agent_id = d.agent_id
+        AND pt.market_id = d.symbol
+        AND pt.intent = 'exit'
+        AND pt.tick_at >= d.ts
        WHERE ${filters.join(" AND ")}
        GROUP BY d.id
-       HAVING SUM(CASE WHEN pt.kind = 'exit' THEN 1 ELSE 0 END) > 0
+       HAVING live_exits > 0 OR paper_exits > 0
        ORDER BY d.ts DESC
        LIMIT @limit`,
     )
@@ -75,7 +90,10 @@ export function loadLabeledDecisions(q: CalibrationLoaderQuery = {}): LabeledDec
       decision: string;
       strategy_kind: string;
       capsule_id: string | null;
-      realized_pnl: number;
+      live_pnl: number;
+      paper_pnl: number;
+      live_exits: number;
+      paper_exits: number;
     }>;
 
   return rows.map((r) => ({
@@ -84,6 +102,6 @@ export function loadLabeledDecisions(q: CalibrationLoaderQuery = {}): LabeledDec
     decision: r.decision,
     strategy_kind: r.strategy_kind,
     capsule_id: r.capsule_id ?? undefined,
-    won: r.realized_pnl > 0,
+    won: (r.live_pnl + r.paper_pnl) > 0,
   }));
 }
