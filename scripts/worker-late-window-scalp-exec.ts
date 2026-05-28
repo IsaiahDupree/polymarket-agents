@@ -221,4 +221,10 @@ async function loop() {
   }
 }
 
-loop();
+// Only start the loop when this file is the main entrypoint. When imported
+// (by scripts/observe-late-window-scalp.ts) the importer manages its own
+// loop and we just expose pollOnce.
+const isMain = process.argv[1]?.endsWith("worker-late-window-scalp-exec.ts") ?? false;
+if (isMain) {
+  loop();
+}

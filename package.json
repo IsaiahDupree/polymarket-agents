@@ -93,7 +93,8 @@
     "supervisor": "tsx scripts/supervisor.ts",
     "audit:wallet": "tsx scripts/audit-wallet.ts",
     "scan:late-window-scalp": "tsx scripts/scan-late-window-scalp.ts",
-    "worker:late-window-scalp-exec": "tsx scripts/worker-late-window-scalp-exec.ts"
+    "worker:late-window-scalp-exec": "tsx scripts/worker-late-window-scalp-exec.ts",
+    "observe:late-window-scalp": "tsx scripts/observe-late-window-scalp.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.98.0",
