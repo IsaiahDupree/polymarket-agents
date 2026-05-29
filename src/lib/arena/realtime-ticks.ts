@@ -69,11 +69,22 @@ let DROPPED_BUSY = 0;
  *  Exposed for the worker heartbeat so the operator can see lock contention. */
 export function droppedBusyCount(): number { return DROPPED_BUSY; }
 
-/** Delete ticks older than `keepHours` (default 24). Returns rows deleted. */
+/** Delete ticks older than `keepHours` (default 24). Returns rows deleted, or
+ *  0 if a write lock contention prevented the prune (it'll retry next call —
+ *  not fatal). 2026-05-29 fix: same SQLITE_BUSY survival as persistRealtimeTick. */
 export function pruneOldTicks(keepHours = 24): number {
   const cutoffUnix = Math.floor(Date.now() / 1000) - keepHours * 3600;
-  const res = db().prepare(`DELETE FROM realtime_ticks WHERE ts_unix < ?`).run(cutoffUnix);
-  return res.changes;
+  try {
+    const res = db().prepare(`DELETE FROM realtime_ticks WHERE ts_unix < ?`).run(cutoffUnix);
+    return res.changes;
+  } catch (e) {
+    const code = (e as { code?: string }).code;
+    if (code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") {
+      DROPPED_BUSY += 1;
+      return 0;
+    }
+    throw e;
+  }
 }
 
 /** Most recent tick per product within `maxAgeSec` seconds. Returns a map

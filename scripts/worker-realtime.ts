@@ -22,6 +22,25 @@ import { insertEvolutionEvent } from "../src/lib/db/queries.ts";
 import { db } from "../src/lib/db/client.ts";
 import { persistRealtimeTick, pruneOldTicks, wsHealth, droppedBusyCount } from "../src/lib/arena/realtime-ticks.ts";
 
+/**
+ * Wrap any DB write call so SQLITE_BUSY / SQLITE_LOCKED never kills the
+ * worker. The busy_timeout pragma absorbs most contention, but bursty
+ * writes can still exceed the wait window. Losing one heartbeat event is
+ * far better than the process dying. 2026-05-29 fix.
+ */
+function safeWrite<T>(label: string, fn: () => T): T | null {
+  try {
+    return fn();
+  } catch (e) {
+    const code = (e as { code?: string }).code;
+    if (code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") {
+      console.warn(`[worker-realtime] dropped ${label} due to ${code}`);
+      return null;
+    }
+    throw e;
+  }
+}
+
 // Slug allow-list from env (comma-separated). If empty, subscribe with no filter
 // (firehose — useful for development; not recommended for prod).
 const EVENT_SLUGS = (process.env.REALTIME_EVENT_SLUGS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
@@ -98,13 +117,13 @@ async function main() {
       // Attribute to scribe-sports when requires_websocket is set on the strategy.
       // Log every Nth activity event to keep evolution_log tidy.
       if (scribeNeedsWs && scribeRow && activityCount % 25 === 0) {
-        insertEvolutionEvent({
+        safeWrite("scribe-sports-tick", () => insertEvolutionEvent({
           strategy_id: scribeRow.strategy_id,
           to_version_id: scribeRow.version_id,
           event_type: "realtime-tick",
           summary: `scribe-sports WS tick #${activityCount} (${msg.type}): ${p.side} ${p.size}@${p.price} ${p.slug.slice(0, 30)}`,
           payload_json: JSON.stringify({ topic: msg.topic, type: msg.type, payload: p }),
-        });
+        }));
       }
     },
     onClobUser: (msg) => {
@@ -112,11 +131,11 @@ async function main() {
       // Authenticated user-channel events are higher value — log every one to
       // evolution_log so the reconciler / audit trail can see broker-side truth
       // arriving in real time.
-      insertEvolutionEvent({
+      safeWrite("clob-user", () => insertEvolutionEvent({
         event_type: msg.type === "trade" ? "realtime-user-trade" : "realtime-user-order",
         summary: `clob_user ${msg.type}: ${(msg.payload as Record<string, unknown>).status ?? "(unknown)"}`,
         payload_json: JSON.stringify({ topic: msg.topic, type: msg.type, payload: msg.payload }),
-      });
+      }));
     },
     onCryptoPrice: (msg) => {
       cryptoPriceCount++;
@@ -162,22 +181,22 @@ async function main() {
     for (const h of stale) {
       if (stalledProducts.has(h.product_id)) continue;
       stalledProducts.add(h.product_id);
-      insertEvolutionEvent({
+      safeWrite("realtime-stalled", () => insertEvolutionEvent({
         event_type: "realtime-stalled",
         summary: `WS stale: ${h.product_id} last tick ${h.ageSec}s ago (>= ${STALE_THRESHOLD_SEC}s threshold)`,
         payload_json: JSON.stringify({ product_id: h.product_id, ageSec: h.ageSec, threshold_sec: STALE_THRESHOLD_SEC, connected: rt.isConnected() }),
-      });
+      }));
     }
     // Clear the dedup flag when products recover.
     for (const h of fresh) stalledProducts.delete(h.product_id);
 
     const dropped = droppedBusyCount();
     console.log(`[worker-realtime] heartbeat: connected=${rt.isConnected()} activity_total=${activityCount} (+${recentActivity}/${elapsedSec.toFixed(0)}s) user_channel=${userChannelCount} crypto=${cryptoPriceCount} (wrote=${cryptoTicksWritten} debounced=${cryptoTicksDebounced}${dropped > 0 ? ` busy_dropped=${dropped}` : ""})${pruned > 0 ? ` pruned=${pruned}` : ""}${stale.length > 0 ? ` STALE=[${stale.map((s) => s.product_id).join(",")}]` : ""}`);
-    insertEvolutionEvent({
+    safeWrite("realtime-heartbeat", () => insertEvolutionEvent({
       event_type: "realtime-heartbeat",
       summary: `WS connected=${rt.isConnected()} activity+${recentActivity}/${elapsedSec.toFixed(0)}s crypto+${cryptoTicksWritten}${stale.length > 0 ? ` · ${stale.length} stale` : ""}`,
       payload_json: JSON.stringify({ activityCount, userChannelCount, cryptoPriceCount, cryptoTicksWritten, cryptoTicksDebounced, recentActivity, elapsedSec, pruned, stale_products: stale.map((s) => s.product_id) }),
-    });
+    }));
   }, HEARTBEAT_INTERVAL_MS);
 
   const stop = (signal: string) => {
