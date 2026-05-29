@@ -38,12 +38,36 @@ export function persistRealtimeTick(symbol: string, price: number, source = "pol
   const last = LAST_WRITE.get(symbol) ?? 0;
   if (now - last < DEBOUNCE_MS) return false;
   LAST_WRITE.set(symbol, now);
-  db().prepare(
-    `INSERT INTO realtime_ticks (symbol, product_id, price, source, ts_unix)
-     VALUES (?, ?, ?, ?, ?)`,
-  ).run(symbol.toLowerCase(), productId, price, source, Math.floor(now / 1000));
-  return true;
+  // Defense-in-depth on top of the busy_timeout pragma: if a write still
+  // collides (e.g. busy_timeout exhausted), drop THIS tick rather than
+  // crashing the worker. The next WS tick (~1s later) supersedes it
+  // anyway. Logging stays quiet to avoid log spam during bursty periods —
+  // surface via wsHealth + stale-tick alert instead.
+  try {
+    db().prepare(
+      `INSERT INTO realtime_ticks (symbol, product_id, price, source, ts_unix)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(symbol.toLowerCase(), productId, price, source, Math.floor(now / 1000));
+    return true;
+  } catch (e) {
+    const code = (e as { code?: string }).code;
+    if (code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") {
+      // Roll back the debounce timestamp so the next tick isn't suppressed
+      // by debounce — we don't want to lose freshness on top of losing
+      // this one. The dropped tick is logged at module-scope counter so
+      // the heartbeat can surface it.
+      LAST_WRITE.delete(symbol);
+      DROPPED_BUSY += 1;
+      return false;
+    }
+    throw e;
+  }
 }
+
+let DROPPED_BUSY = 0;
+/** Number of ticks dropped due to SQLITE_BUSY since process start.
+ *  Exposed for the worker heartbeat so the operator can see lock contention. */
+export function droppedBusyCount(): number { return DROPPED_BUSY; }
 
 /** Delete ticks older than `keepHours` (default 24). Returns rows deleted. */
 export function pruneOldTicks(keepHours = 24): number {

@@ -12,6 +12,14 @@ export function db(): Database.Database {
   const handle = new Database(DB_PATH);
   handle.pragma("journal_mode = WAL");
   handle.pragma("foreign_keys = ON");
+  // Wait up to 5s for a write lock instead of erroring with SQLITE_BUSY.
+  // The WS worker can burst 30+ writes/sec; without this, a concurrent
+  // arena:tick / worker:reconcile / scheduler job will collide and one
+  // process dies. WAL mode allows readers + 1 writer; busy_timeout makes
+  // the second writer wait its turn. (2026-05-25 worker:realtime crash:
+  // 200K writes succeeded, 200,001st lost to BUSY because the tick ran
+  // simultaneously.)
+  handle.pragma("busy_timeout = 5000");
   const schema = readFileSync(resolve(process.cwd(), "src/lib/db/schema.sql"), "utf8");
   handle.exec(schema);
   runLightMigrations(handle);

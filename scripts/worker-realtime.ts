@@ -20,7 +20,7 @@ import "./_env.ts";
 import { ConnectionStatus, PolymarketRealtime, hasClobCreds } from "../src/lib/polymarket/realtime.ts";
 import { insertEvolutionEvent } from "../src/lib/db/queries.ts";
 import { db } from "../src/lib/db/client.ts";
-import { persistRealtimeTick, pruneOldTicks, wsHealth } from "../src/lib/arena/realtime-ticks.ts";
+import { persistRealtimeTick, pruneOldTicks, wsHealth, droppedBusyCount } from "../src/lib/arena/realtime-ticks.ts";
 
 // Slug allow-list from env (comma-separated). If empty, subscribe with no filter
 // (firehose — useful for development; not recommended for prod).
@@ -171,7 +171,8 @@ async function main() {
     // Clear the dedup flag when products recover.
     for (const h of fresh) stalledProducts.delete(h.product_id);
 
-    console.log(`[worker-realtime] heartbeat: connected=${rt.isConnected()} activity_total=${activityCount} (+${recentActivity}/${elapsedSec.toFixed(0)}s) user_channel=${userChannelCount} crypto=${cryptoPriceCount} (wrote=${cryptoTicksWritten} debounced=${cryptoTicksDebounced})${pruned > 0 ? ` pruned=${pruned}` : ""}${stale.length > 0 ? ` STALE=[${stale.map((s) => s.product_id).join(",")}]` : ""}`);
+    const dropped = droppedBusyCount();
+    console.log(`[worker-realtime] heartbeat: connected=${rt.isConnected()} activity_total=${activityCount} (+${recentActivity}/${elapsedSec.toFixed(0)}s) user_channel=${userChannelCount} crypto=${cryptoPriceCount} (wrote=${cryptoTicksWritten} debounced=${cryptoTicksDebounced}${dropped > 0 ? ` busy_dropped=${dropped}` : ""})${pruned > 0 ? ` pruned=${pruned}` : ""}${stale.length > 0 ? ` STALE=[${stale.map((s) => s.product_id).join(",")}]` : ""}`);
     insertEvolutionEvent({
       event_type: "realtime-heartbeat",
       summary: `WS connected=${rt.isConnected()} activity+${recentActivity}/${elapsedSec.toFixed(0)}s crypto+${cryptoTicksWritten}${stale.length > 0 ? ` · ${stale.length} stale` : ""}`,
