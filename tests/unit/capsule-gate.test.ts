@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { checkOrder } from "@/lib/capsules/gate";
-import type { Capsule } from "@/lib/capsules/types";
+import { checkOrder } from "@risk/capsules/gate";
+import type { Capsule } from "@risk/capsules/types";
 
 function makeCapsule(overrides: Partial<Capsule> = {}): Capsule {
   return {

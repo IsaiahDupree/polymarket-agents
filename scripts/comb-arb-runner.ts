@@ -14,8 +14,8 @@
  * the solver — just supply them when you have them.
  */
 import "./_env.ts";
-import { poly } from "../src/lib/polymarket/client.ts";
-import { findCombinatorialArbs, type CombinatorialMarket } from "../src/lib/polymarket/arb.ts";
+import { poly } from "@adapters/polymarket/client";
+import { findCombinatorialArbs, type CombinatorialMarket } from "@adapters/polymarket/arb";
 import { insertEvolutionEvent } from "../src/lib/db/queries.ts";
 
 const N_EVENTS = Number(process.env.COMB_EVENTS ?? "10");

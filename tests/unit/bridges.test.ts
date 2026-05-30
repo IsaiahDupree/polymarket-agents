@@ -4,7 +4,7 @@ import {
   summarizeFlows,
   usdcUnitsToUsd,
   USDC_E_POLYGON,
-} from "@/lib/onchain/bridges";
+} from "@adapters/aave/bridges";
 
 describe("usdcUnitsToUsd", () => {
   it("decodes whole and fractional 6-decimal USDC", () => {

@@ -6,7 +6,7 @@
  *  3. Two-market dependency arb (Trump wins PA AND Republicans win PA by 5+).
  */
 import "./_env.ts";
-import { solveArbLp, solveColumnGen, type LpOutcome } from "../src/lib/polymarket/lp.ts";
+import { solveArbLp, solveColumnGen, type LpOutcome } from "@adapters/polymarket/lp";
 
 async function run() {
   console.log("Case 1: single-market arb (0.48 + 0.47 = 0.95)");

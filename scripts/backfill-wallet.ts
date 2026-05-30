@@ -19,7 +19,7 @@ import "./_env.ts";
 import { createPublicClient, http, parseAbiItem, pad } from "viem";
 import { polygon } from "viem/chains";
 import { db } from "../src/lib/db/client.ts";
-import { POLYGON_CONTRACTS } from "../src/lib/polymarket/onchain.ts";
+import { POLYGON_CONTRACTS } from "@adapters/polymarket/onchain";
 
 const args = process.argv.slice(2);
 const handle = args.find((a) => !a.startsWith("--"));

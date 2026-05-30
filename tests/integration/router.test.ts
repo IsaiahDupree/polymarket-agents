@@ -10,12 +10,12 @@ vi.mock("@/lib/db/client", () => ({
   closeDb: () => { memDb?.close(); memDb = null; },
 }));
 
-import { ExecutionRouter } from "@/lib/venue/router";
-import { RiskEngine } from "@/lib/risk/engine";
-import { KillSwitch } from "@/lib/risk/kill-switch";
-import { createCapsule, setStatus } from "@/lib/capsules/store";
-import type { SubmitVerdict, UnifiedOrder, VenueAdapter, VenueCapabilities } from "@/lib/venue/types";
-import { listOrderEvents } from "@/lib/venue/order-events";
+import { ExecutionRouter } from "@core/venue/router";
+import { RiskEngine } from "@risk/engine";
+import { KillSwitch } from "@risk/kill-switch";
+import { createCapsule, setStatus } from "@risk/capsules/store";
+import type { SubmitVerdict, UnifiedOrder, VenueAdapter, VenueCapabilities } from "@core/venue/types";
+import { listOrderEvents } from "@core/venue/order-events";
 
 class FakeAdapter implements VenueAdapter {
   readonly name = "fake";

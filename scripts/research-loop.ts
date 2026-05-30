@@ -20,12 +20,12 @@
  */
 import "./_env.ts";
 import { db } from "../src/lib/db/client.ts";
-import { poly } from "../src/lib/polymarket/client.ts";
-import { realizedVol, returnOver, summarize, zScoreVsRollingMean, type PricePoint, type Signal } from "../src/lib/polymarket/signals.ts";
+import { poly } from "@adapters/polymarket/client";
+import { realizedVol, returnOver, summarize, zScoreVsRollingMean, type PricePoint, type Signal } from "@adapters/polymarket/signals";
 import { insertEvolutionEvent, insertResearchNote, recordMarketSnapshot } from "../src/lib/db/queries.ts";
 import { buildAgentContext, summarizeContext } from "../src/lib/agents/context.ts";
 import { backtestProposedSpec } from "../src/lib/agents/backtest-loop.ts";
-import { getDefaultRouter } from "../src/lib/venue/router.ts";
+import { getDefaultRouter } from "@core/venue/router";
 import type { Evaluator, EvaluatorArgs, EvaluatorVerdict, StrategyRow, StrategyVersionRow } from "../src/lib/agents/types.ts";
 
 async function buildSignals(limit: number): Promise<Signal[]> {

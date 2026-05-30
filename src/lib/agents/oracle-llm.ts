@@ -20,11 +20,17 @@
  *   - Graceful no-op when auth unavailable: oracleLlmAvailable() returns false
  */
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Anchor relative to repo root, not process.cwd() — apps/web carve means
+// Next.js dev server runs with cwd=apps/web/.
+const __thisFile = fileURLToPath(import.meta.url);
+const REPO_ROOT = resolve(dirname(__thisFile), "..", "..", "..");
 import Anthropic from "@anthropic-ai/sdk";
 import { authIsAvailable, getOAuthClient } from "@/lib/anthropic/auth";
 import type { Evaluator, EvaluatorArgs, EvaluatorVerdict } from "./types";
-import type { Signal } from "@/lib/polymarket/signals";
+import type { Signal } from "@adapters/polymarket/signals";
 
 const MODEL = "claude-haiku-4-5";
 
@@ -46,7 +52,7 @@ let cachedSkillMd: string | null = null;
 function readSkillMd(): string {
   if (cachedSkillMd != null) return cachedSkillMd;
   try {
-    cachedSkillMd = readFileSync(resolve(process.cwd(), "docs/skills/SKILL.md"), "utf8");
+    cachedSkillMd = readFileSync(resolve(REPO_ROOT, "docs/skills/SKILL.md"), "utf8");
   } catch {
     cachedSkillMd = "(SKILL.md not found at expected path; running without workspace context)";
   }

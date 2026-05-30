@@ -16,11 +16,11 @@
  */
 import "./_env.ts";
 import { WebSocket } from "ws";
-import { poly } from "../src/lib/polymarket/client.ts";
-import { findSingleMarketArbs, type MarketPair, type OrderBookSummary } from "../src/lib/polymarket/arb.ts";
-import { executeSingleMarketArb, safety } from "../src/lib/polymarket/execute.ts";
+import { poly } from "@adapters/polymarket/client";
+import { findSingleMarketArbs, type MarketPair, type OrderBookSummary } from "@adapters/polymarket/arb";
+import { executeSingleMarketArb, safety } from "@adapters/polymarket/execute";
 import { insertEvolutionEvent } from "../src/lib/db/queries.ts";
-import { subscribeOrderFilled, impliedPriceFromFill } from "../src/lib/polymarket/onchain.ts";
+import { subscribeOrderFilled, impliedPriceFromFill } from "@adapters/polymarket/onchain";
 
 const N_MARKETS = Number(process.env.ARB_MARKETS ?? "12");
 const MAX_ATTEMPTS = Number(process.env.ARB_MAX_ATTEMPTS ?? "12");

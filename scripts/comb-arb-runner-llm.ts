@@ -15,9 +15,9 @@
  *   npm run arb:comb:llm
  */
 import "./_env.ts";
-import { poly } from "../src/lib/polymarket/client.ts";
-import { findCombinatorialArbs, type CombinatorialMarket, type DependencyConstraint } from "../src/lib/polymarket/arb.ts";
-import { inferDependenciesForGroup, inferIsAvailable, type MarketForInference } from "../src/lib/polymarket/dependency-inference.ts";
+import { poly } from "@adapters/polymarket/client";
+import { findCombinatorialArbs, type CombinatorialMarket, type DependencyConstraint } from "@adapters/polymarket/arb";
+import { inferDependenciesForGroup, inferIsAvailable, type MarketForInference } from "@adapters/polymarket/dependency-inference";
 import { insertEvolutionEvent, insertResearchNote } from "../src/lib/db/queries.ts";
 
 const N_EVENTS = Number(process.env.COMB_EVENTS ?? "6");

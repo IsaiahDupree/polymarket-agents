@@ -1,6 +1,6 @@
 import "./_env";
 import axios from "axios";
-import { installProxyRoutingOnce, proxyStatus } from "../src/lib/polymarket/proxy-routing";
+import { installProxyRoutingOnce, proxyStatus } from "@adapters/polymarket/proxy-routing";
 
 (async () => {
   console.log("proxyStatus:", proxyStatus());

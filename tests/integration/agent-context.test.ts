@@ -12,10 +12,10 @@ vi.mock("@/lib/db/client", () => ({
 
 import * as dbModule from "@/lib/db/client";
 import { buildAgentContext, summarizeContext } from "@/lib/agents/context";
-import { createCapsule, setStatus } from "@/lib/capsules/store";
-import { appendOrderEvent } from "@/lib/venue/order-events";
-import { resetDefaultKillSwitchForTests } from "@/lib/risk/kill-switch";
-import { resetDefaultRiskEngineForTests } from "@/lib/risk/engine";
+import { createCapsule, setStatus } from "@risk/capsules/store";
+import { appendOrderEvent } from "@core/venue/order-events";
+import { resetDefaultKillSwitchForTests } from "@risk/kill-switch";
+import { resetDefaultRiskEngineForTests } from "@risk/engine";
 
 function seedAgentAndStrategy(): { agentId: number; strategyId: number; versionId: number } {
   const db = (dbModule as any).db();

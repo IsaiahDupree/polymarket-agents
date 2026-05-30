@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findSingleMarketArbs, kellyFraction, type MarketPair } from "@/lib/polymarket/arb";
+import { findSingleMarketArbs, kellyFraction, type MarketPair } from "@adapters/polymarket/arb";
 import { book, samplePair } from "../helpers/fixtures";
 
 // Helper to build a single candidate row

@@ -34,7 +34,7 @@ beforeEach(async () => {
       },
     });
   }) as any;
-  const { clearAuthCache } = await import("@/lib/coinbase/auth");
+  const { clearAuthCache } = await import("@adapters/coinbase/auth");
   clearAuthCache();
 });
 
@@ -67,7 +67,7 @@ describe("cb client — URL building", () => {
     { name: "listPaymentMethods", call: async (cb: any) => cb.listPaymentMethods(), expectPath: "/api/v3/brokerage/payment_methods", auth: true },
     { name: "getKeyPermissions", call: async (cb: any) => cb.getKeyPermissions(), expectPath: "/api/v3/brokerage/key_permissions", auth: true },
   ])("$name → $expectPath (auth=$auth)", async ({ call, expectPath, auth }) => {
-    const { cb } = await import("@/lib/coinbase/client");
+    const { cb } = await import("@adapters/coinbase/client");
     await call(cb);
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toBe(`https://api.coinbase.com${expectPath}`);
@@ -78,13 +78,13 @@ describe("cb client — URL building", () => {
 
   it("honors COINBASE_HOST override (e.g. for sandbox)", async () => {
     process.env.COINBASE_HOST = "https://api-sandbox.coinbase.com";
-    const { cb } = await import("@/lib/coinbase/client");
+    const { cb } = await import("@adapters/coinbase/client");
     await cb.time();
     expect(calls[0].url).toBe("https://api-sandbox.coinbase.com/api/v3/brokerage/time");
   });
 
   it("captures rate-limit headers on the last call", async () => {
-    const { cb, getLastRateLimit } = await import("@/lib/coinbase/client");
+    const { cb, getLastRateLimit } = await import("@adapters/coinbase/client");
     await cb.time();
     const rl = getLastRateLimit();
     expect(rl.limit).toBe(30);
@@ -93,7 +93,7 @@ describe("cb client — URL building", () => {
   });
 
   it("createOrder POSTs JSON body to /orders with auth", async () => {
-    const { cb } = await import("@/lib/coinbase/client");
+    const { cb } = await import("@adapters/coinbase/client");
     await cb.createOrder({
       client_order_id: "abc",
       product_id: "BTC-USD",
@@ -110,7 +110,7 @@ describe("cb client — URL building", () => {
   });
 
   it("batchCancelOrders POSTs order_ids array", async () => {
-    const { cb } = await import("@/lib/coinbase/client");
+    const { cb } = await import("@adapters/coinbase/client");
     await cb.batchCancelOrders({ order_ids: ["a", "b", "c"] });
     expect(calls[0].init.method).toBe("POST");
     expect(calls[0].url).toBe("https://api.coinbase.com/api/v3/brokerage/orders/batch_cancel");
@@ -119,7 +119,7 @@ describe("cb client — URL building", () => {
 
   it("throws on non-2xx with method + path + status in message", async () => {
     globalThis.fetch = vi.fn(async () => new Response("nope", { status: 403, headers: { "content-type": "text/plain" } })) as any;
-    const { cb } = await import("@/lib/coinbase/client");
+    const { cb } = await import("@adapters/coinbase/client");
     await expect(cb.listAccounts()).rejects.toThrow(/GET \/api\/v3\/brokerage\/accounts → 403/);
   });
 });

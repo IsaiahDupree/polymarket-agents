@@ -741,3 +741,84 @@ CREATE INDEX IF NOT EXISTS idx_decision_journal_ts ON decision_journal(ts);
 CREATE INDEX IF NOT EXISTS idx_decision_journal_capsule ON decision_journal(capsule_id, ts);
 CREATE INDEX IF NOT EXISTS idx_decision_journal_decision ON decision_journal(decision, ts);
 CREATE INDEX IF NOT EXISTS idx_decision_journal_strategy_kind ON decision_journal(strategy_kind, ts);
+
+-- ---------------------------------------------------------------------------
+-- Training runs — per-agent backtest / parameter-sweep history.
+--
+-- Each row captures one training invocation: agent_id, mode (backtest|sweep|
+-- forward), the date range it replayed, status, and the summary payload
+-- (PnL, trades, win-rate, max DD, optional ranked variants for sweep).
+--
+-- Powers the /arena/agents/[id]/train page and the future training-campaign
+-- worker. Append-only, ordered by id DESC for "show me the last 20 runs".
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS training_runs (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id     INTEGER NOT NULL,                       -- paper_agents.id
+  mode         TEXT NOT NULL,                          -- backtest | sweep | forward
+  from_iso     TEXT NOT NULL,                          -- replay window start
+  to_iso       TEXT NOT NULL,                          -- replay window end
+  status       TEXT NOT NULL,                          -- queued | running | done | failed
+  -- Summary fields surfaced into list views without parsing JSON.
+  pnl_usd      REAL,                                   -- net PnL over the window
+  trades_count INTEGER,
+  wins_count   INTEGER,
+  max_dd_pct   REAL,                                   -- 0..1
+  fitness      REAL,                                   -- pnl_pct − k * max_dd_pct
+  -- Full payload — mode-specific shape (variants array for sweep, equity curve for backtest)
+  summary_json TEXT,
+  error        TEXT,                                   -- populated when status='failed'
+  started_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  ended_at     TEXT,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_training_runs_agent_ts ON training_runs(agent_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_training_runs_status ON training_runs(status, id DESC);
+
+-- ---------------------------------------------------------------------------
+-- Training campaigns — produce many agent candidates at once.
+--
+-- A campaign is a structured invocation: "generate N variants of
+-- poly_binary_repricing on BTC over 2024-01-01..2024-12-31, return top K".
+-- The worker backtests each variant; results land in
+-- training_campaign_candidates.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS training_campaigns (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  name            TEXT NOT NULL,
+  kind            TEXT NOT NULL,                     -- genome kind to vary
+  asset_filter    TEXT,                              -- 'BTC' | 'ETH' | NULL (any)
+  from_iso        TEXT NOT NULL,
+  to_iso          TEXT NOT NULL,
+  variants        INTEGER NOT NULL,                  -- N variants to test
+  per_pct         REAL NOT NULL DEFAULT 0.20,        -- ±perturbation (sweep mode only)
+  base_agent_id   INTEGER,                           -- if set, sweep this agent's genome; else random genomes
+  status          TEXT NOT NULL,                     -- queued | running | done | failed
+  candidates_produced INTEGER NOT NULL DEFAULT 0,
+  best_candidate_id INTEGER,                         -- FK paper_agents.id of the highest-PnL variant
+  best_pnl_usd    REAL,
+  best_fitness    REAL,
+  charter         TEXT,                              -- free-form operator notes
+  error           TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  started_at      TEXT,
+  ended_at        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_training_campaigns_status ON training_campaigns(status, id DESC);
+
+CREATE TABLE IF NOT EXISTS training_campaign_candidates (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  campaign_id     INTEGER NOT NULL REFERENCES training_campaigns(id),
+  rank            INTEGER NOT NULL,                  -- 1 = best
+  genome_json     TEXT NOT NULL,
+  pnl_usd         REAL NOT NULL,
+  pnl_pct         REAL NOT NULL,
+  trades_count    INTEGER NOT NULL,
+  wins_count      INTEGER NOT NULL,
+  max_dd_pct      REAL NOT NULL,
+  fitness         REAL NOT NULL,
+  paper_agent_id  INTEGER,                           -- populated when auto-seeded as a paper_agents row
+  notes           TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_campaign_candidates ON training_campaign_candidates(campaign_id, rank);

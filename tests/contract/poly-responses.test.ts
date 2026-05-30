@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { poly } from "@/lib/polymarket/client";
+import { poly } from "@adapters/polymarket/client";
 
 // Each test mocks fetch to assert request URL/headers AND that the client correctly parses the response.
 

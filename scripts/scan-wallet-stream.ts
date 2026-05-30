@@ -20,7 +20,7 @@
  * consensus detector, fingerprint summarizer) layer on top.
  */
 import "./_env.ts";
-import { ConnectionStatus, PolymarketRealtime } from "../src/lib/polymarket/realtime.ts";
+import { ConnectionStatus, PolymarketRealtime } from "@adapters/polymarket/realtime";
 import { insertEvolutionEvent } from "../src/lib/db/queries.ts";
 
 const WHALE_USD = Number(process.env.SCAN_WHALE_USD ?? "1000");

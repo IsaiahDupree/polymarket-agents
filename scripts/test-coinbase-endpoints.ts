@@ -16,8 +16,8 @@ import "./_env.ts";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { cb, getLastRateLimit } from "../src/lib/coinbase/client.ts";
-import { authIsAvailable, keyName } from "../src/lib/coinbase/auth.ts";
+import { cb, getLastRateLimit } from "@adapters/coinbase/client";
+import { authIsAvailable, keyName } from "@adapters/coinbase/auth";
 
 type Status = "pass" | "fail" | "skip";
 type Result = {

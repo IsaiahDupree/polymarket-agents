@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { poly } from "@/lib/polymarket/client";
+import { poly } from "@adapters/polymarket/client";
 
 // We capture every fetch call to verify URL construction without hitting the network.
 let calls: Array<{ url: string; method: string; headers?: Record<string, string> }> = [];

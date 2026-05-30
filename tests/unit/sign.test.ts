@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hashOrderPayload, hmacSign } from "@/lib/polymarket/sign";
+import { hashOrderPayload, hmacSign } from "@adapters/polymarket/sign";
 
 describe("hmacSign — known shape", () => {
   // Secret is base64url-encoded; we just need a valid-shaped value.

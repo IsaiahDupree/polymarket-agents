@@ -59,7 +59,7 @@ beforeEach(async () => {
     }
     return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
   }) as any;
-  const { clearAuthCache } = await import("@/lib/coinbase/auth");
+  const { clearAuthCache } = await import("@adapters/coinbase/auth");
   clearAuthCache();
 });
 
@@ -77,7 +77,7 @@ afterEach(() => {
 
 describe("executeCoinbaseMarket — DRY_RUN gate (COINBASE_ALLOW_TRADE != 1)", () => {
   it("returns kind=dry-run and writes a cb-dry-run evolution event without calling fetch for /orders", async () => {
-    const { executeCoinbaseMarket } = await import("@/lib/coinbase/execute");
+    const { executeCoinbaseMarket } = await import("@adapters/coinbase/execute");
     const { db } = await import("@/lib/db/client");
     const verdict = await executeCoinbaseMarket({ productId: "BTC-USD", side: "BUY", size: "10" });
     expect(verdict.kind).toBe("dry-run");
@@ -93,7 +93,7 @@ describe("executeCoinbaseMarket — per-trade cap", () => {
   it("rejects when BUY quote_size exceeds COINBASE_MAX_TRADE_USD", async () => {
     process.env.COINBASE_ALLOW_TRADE = "1";
     process.env.COINBASE_MAX_TRADE_USD = "10";
-    const { executeCoinbaseMarket } = await import("@/lib/coinbase/execute");
+    const { executeCoinbaseMarket } = await import("@adapters/coinbase/execute");
     const { db } = await import("@/lib/db/client");
     const verdict = await executeCoinbaseMarket({ productId: "BTC-USD", side: "BUY", size: "100" });
     expect(verdict.kind).toBe("rejected");
@@ -106,7 +106,7 @@ describe("executeCoinbaseMarket — per-trade cap", () => {
   it("rejects when SELL converted via best-bid exceeds the cap", async () => {
     process.env.COINBASE_ALLOW_TRADE = "1";
     process.env.COINBASE_MAX_TRADE_USD = "10";
-    const { executeCoinbaseMarket } = await import("@/lib/coinbase/execute");
+    const { executeCoinbaseMarket } = await import("@adapters/coinbase/execute");
     const verdict = await executeCoinbaseMarket({ productId: "BTC-USD", side: "SELL", size: "1" });
     expect(verdict.kind).toBe("rejected");
   });
@@ -119,7 +119,7 @@ describe("executeCoinbaseMarket — daily cap (computed from evolution_log)", ()
     process.env.COINBASE_MAX_DAILY_USD = "50";
     const { db } = await import("@/lib/db/client");
     db().prepare(`INSERT INTO evolution_log (event_type, summary, payload_json) VALUES ('cb-executed', 'seed', json_object('cost_usd', 40))`).run();
-    const { executeCoinbaseMarket } = await import("@/lib/coinbase/execute");
+    const { executeCoinbaseMarket } = await import("@adapters/coinbase/execute");
     const verdict = await executeCoinbaseMarket({ productId: "BTC-USD", side: "BUY", size: "30" });
     expect(verdict.kind).toBe("rejected");
     if (verdict.kind === "rejected") expect(verdict.reason).toBe("daily cap");
@@ -131,7 +131,7 @@ describe("executeCoinbaseMarket — LIVE path submits and logs", () => {
     process.env.COINBASE_ALLOW_TRADE = "1";
     process.env.COINBASE_MAX_TRADE_USD = "100";
     process.env.COINBASE_MAX_DAILY_USD = "1000";
-    const { executeCoinbaseMarket } = await import("@/lib/coinbase/execute");
+    const { executeCoinbaseMarket } = await import("@adapters/coinbase/execute");
     const { db } = await import("@/lib/db/client");
     const verdict = await executeCoinbaseMarket({ productId: "BTC-USD", side: "BUY", size: "5" });
     expect(verdict.kind).toBe("executed");
@@ -146,7 +146,7 @@ describe("executeCoinbaseMarket — LIVE path submits and logs", () => {
 describe("killSwitch — defensive cancel of every open order", () => {
   it("is allowed regardless of COINBASE_ALLOW_TRADE and logs cb-kill-switch", async () => {
     delete process.env.COINBASE_ALLOW_TRADE;
-    const { killSwitch } = await import("@/lib/coinbase/execute");
+    const { killSwitch } = await import("@adapters/coinbase/execute");
     const { db } = await import("@/lib/db/client");
     const result = await killSwitch();
     expect(result.ok).toBe(true);

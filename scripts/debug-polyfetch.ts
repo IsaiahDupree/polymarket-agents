@@ -1,5 +1,5 @@
 import "./_env";
-import { polyFetch, proxyStatus, installProxyRoutingOnce } from "../src/lib/polymarket/proxy-routing";
+import { polyFetch, proxyStatus, installProxyRoutingOnce } from "@adapters/polymarket/proxy-routing";
 
 (async () => {
   installProxyRoutingOnce();

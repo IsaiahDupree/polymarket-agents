@@ -19,7 +19,7 @@ import { db as openDb } from "../src/lib/db/client.ts";
 import {
   inferDiversityProfile,
   isKnownKind,
-} from "../src/lib/capsules/diversity-inference.ts";
+} from "@risk/capsules/diversity-inference";
 
 type Args = { force: boolean; includePaused: boolean; dryRun: boolean };
 

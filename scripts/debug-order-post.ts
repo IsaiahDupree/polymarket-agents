@@ -5,7 +5,7 @@
  * orders. If 403, the proxy IP is blacklisted for writes (not reads).
  */
 import "./_env";
-import { polyFetch } from "../src/lib/polymarket/proxy-routing";
+import { polyFetch } from "@adapters/polymarket/proxy-routing";
 
 (async () => {
   console.log("Testing POST /order via polyFetch with deliberate-bad-payload...");

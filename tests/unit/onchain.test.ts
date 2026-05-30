@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { impliedPriceFromFill } from "@/lib/polymarket/onchain";
+import { impliedPriceFromFill } from "@adapters/polymarket/onchain";
 import { fill } from "../helpers/fixtures";
 
 describe("impliedPriceFromFill — BUY (maker pays USDC)", () => {

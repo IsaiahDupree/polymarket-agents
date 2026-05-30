@@ -13,10 +13,10 @@
 import "./_env.ts";
 import { randomUUID } from "node:crypto";
 import { db } from "../src/lib/db/client.ts";
-import { createCapsule, setStatus } from "../src/lib/capsules/store.ts";
-import { setVersionStage } from "../src/lib/stages/gate.ts";
-import { getDefaultRouter } from "../src/lib/venue/router.ts";
-import { listOrderEvents } from "../src/lib/venue/order-events.ts";
+import { createCapsule, setStatus } from "@risk/capsules/store";
+import { setVersionStage } from "@oms/stages/gate";
+import { getDefaultRouter } from "@core/venue/router";
+import { listOrderEvents } from "@core/venue/order-events";
 
 function seedAgentAndVersion(): { agentId: number; strategyId: number; versionId: number; slug: string } {
   const slug = `paper-flow-${randomUUID().slice(0, 8)}`;

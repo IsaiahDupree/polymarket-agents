@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { solveArbLp, solveColumnGen, type LpOutcome, type LpConstraint } from "@/lib/polymarket/lp";
+import { solveArbLp, solveColumnGen, type LpOutcome, type LpConstraint } from "@adapters/polymarket/lp";
 
 describe("solveArbLp — single-market basket", () => {
   it.each([

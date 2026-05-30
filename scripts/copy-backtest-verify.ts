@@ -13,7 +13,7 @@
  */
 import "./_env.ts";
 import { db } from "../src/lib/db/client.ts";
-import { poly } from "../src/lib/polymarket/client.ts";
+import { poly } from "@adapters/polymarket/client";
 
 const argv = process.argv.slice(2);
 function flag(name: string): string | null {

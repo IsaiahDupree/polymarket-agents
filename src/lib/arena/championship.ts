@@ -7,11 +7,11 @@
  * (creates a real-money capsule in 'paper' stage) or rejects.
  *
  * This module is a thin coordination layer between `championship_log` and the
- * already-shipped capsule store at `@/lib/capsules/store`. We don't duplicate
+ * already-shipped capsule store at `@risk/capsules/store`. We don't duplicate
  * capsule persistence here — `createCapsule` + `setStatus` from the store do it.
  */
 import { db } from "@/lib/db/client";
-import { createCapsule, setStatus, listCapsules as listAllCapsules, getCapsule as getCapsuleRow } from "@/lib/capsules/store";
+import { createCapsule, setStatus, listCapsules as listAllCapsules, getCapsule as getCapsuleRow } from "@risk/capsules/store";
 import { attachCapsuleToChampionship, getPaperAgent } from "./db";
 import { insertEvolutionEvent } from "@/lib/db/queries";
 import { parseGenome } from "./genome";

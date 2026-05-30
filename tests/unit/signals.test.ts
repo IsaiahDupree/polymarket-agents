@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { realizedVol, returnOver, summarize, zScoreVsRollingMean, type PricePoint } from "@/lib/polymarket/signals";
+import { realizedVol, returnOver, summarize, zScoreVsRollingMean, type PricePoint } from "@adapters/polymarket/signals";
 import { syntheticSeries } from "../helpers/fixtures";
 
 describe("returnOver", () => {

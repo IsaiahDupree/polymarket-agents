@@ -10,7 +10,7 @@ vi.mock("@/lib/db/client", () => ({
   closeDb: () => { memDb?.close(); memDb = null; },
 }));
 
-import { canTradeLive, canTradePaper, getVersionStage, setVersionStage } from "@/lib/stages/gate";
+import { canTradeLive, canTradePaper, getVersionStage, setVersionStage } from "@oms/stages/gate";
 
 beforeEach(() => {
   memDb?.close();

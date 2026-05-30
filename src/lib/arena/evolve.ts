@@ -26,7 +26,7 @@ import { aggressivePresets } from "./seed-presets";
 import { applySignal, markToMarket } from "./sim";
 import { runAutoPromote } from "./auto-promote";
 import { runMetaEvolution, shouldRunMetaEvolution } from "./meta-evolution";
-import { runCircuitBreaker } from "@/lib/capsules/circuit-breaker";
+import { runCircuitBreaker } from "@risk/capsules/circuit-breaker";
 import { applyClusterKillSwitches } from "@/lib/portfolio/cluster-killswitch-wrapper";
 import {
   computeBreedingWeights,
@@ -34,7 +34,7 @@ import {
   readBreedingThresholdsFromEnv,
   type ClusterTripEvent,
 } from "./cluster-aware-breeding";
-import { inferDiversityProfile } from "@/lib/capsules/diversity-inference";
+import { inferDiversityProfile } from "@risk/capsules/diversity-inference";
 import { getBinaryMeta } from "./short-binaries";
 import type { LiveAgent, PaperAgentRow, TickContext } from "./types";
 

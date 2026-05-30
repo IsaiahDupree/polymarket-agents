@@ -9,8 +9,8 @@
  * submit an order through the router. The research-loop runner dispatches
  * each kind into the right downstream pipeline.
  */
-import type { Signal } from "@/lib/polymarket/signals";
-import type { UnifiedOrder } from "@/lib/venue/types";
+import type { Signal } from "@adapters/polymarket/signals";
+import type { UnifiedOrder } from "@core/venue/types";
 import type { AgentContext } from "./context";
 
 export type StrategyRow = {

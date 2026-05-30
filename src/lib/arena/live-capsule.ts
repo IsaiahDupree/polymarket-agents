@@ -15,7 +15,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { db } from "@/lib/db/client";
-import { getDefaultRouter } from "@/lib/venue/router";
+import { getDefaultRouter } from "@core/venue/router";
 import { insertEvolutionEvent } from "@/lib/db/queries";
 import { getBinaryMeta } from "./short-binaries";
 import { runDecisionPipeline } from "@/lib/decision/pipeline";

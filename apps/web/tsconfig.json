@@ -1,0 +1,28 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": "../..",
+    "paths": {
+      "@/*": ["./apps/web/src/*", "./src/*"],
+      "@core/*": ["./packages/core/src/*"],
+      "@adapters/polymarket/*": ["./packages/adapters/polymarket/src/*"],
+      "@adapters/coinbase/*": ["./packages/adapters/coinbase/src/*"],
+      "@adapters/aave/*": ["./packages/adapters/aave/src/*"],
+      "@adapters/sim/*": ["./packages/adapters/sim/src/*"],
+      "@strategy/*": ["./packages/strategy/src/*"],
+      "@risk/*": ["./packages/risk/src/*"],
+      "@oms/*": ["./packages/oms/src/*"],
+      "@data/*": ["./packages/data/src/*"],
+      "@quant/*": ["./packages/quant/src/*"],
+      "@wallet/*": ["./packages/wallet/src/*"],
+      "@agent/*": ["./packages/agent/src/*"]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    ".next/types/**/*.ts"
+  ],
+  "exclude": ["node_modules", ".next", "dist"]
+}

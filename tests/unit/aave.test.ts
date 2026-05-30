@@ -5,7 +5,7 @@ import {
   HF_INFINITY_SENTINEL,
   riskTierFor,
   wadToFloat,
-} from "@/lib/onchain/aave";
+} from "@adapters/aave/aave";
 
 describe("wadToFloat", () => {
   it("converts integer WAD values", () => {

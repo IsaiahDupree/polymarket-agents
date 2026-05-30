@@ -1,8 +1,8 @@
 /**
  * Synthetic test data. No real wallets, no real keys.
  */
-import type { OrderBookSummary, MarketPair } from "@/lib/polymarket/arb";
-import type { OnChainFill } from "@/lib/polymarket/onchain";
+import type { OrderBookSummary, MarketPair } from "@adapters/polymarket/arb";
+import type { OnChainFill } from "@adapters/polymarket/onchain";
 
 export const FAKE_TOKEN_YES = "1111111111111111111111111111111111111111111111111111111111111111";
 export const FAKE_TOKEN_NO = "2222222222222222222222222222222222222222222222222222222222222222";

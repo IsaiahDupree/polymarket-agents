@@ -187,7 +187,7 @@ async function section(title: string, fn: () => Promise<void>) {
       skip("clob-auth", "all", "GET", "—", "no L2 creds — run `npm run derive:creds`");
       return;
     }
-    const { hmacSign } = await import("../src/lib/polymarket/sign.ts");
+    const { hmacSign } = await import("@adapters/polymarket/sign");
     const headers = (method: string, path: string, body?: string) => {
       const ts = Math.floor(Date.now() / 1000).toString();
       const sig = hmacSign(env.CLOB_SECRET, ts, method, path, body);

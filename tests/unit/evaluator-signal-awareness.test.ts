@@ -15,7 +15,7 @@ import { describe, expect, it } from "vitest";
 // only execute the file's top-level imports/types/declarations, not the
 // IIFE that requires runtime env.
 import type { AgentContext } from "@/lib/agents/context";
-import type { Signal } from "@/lib/polymarket/signals";
+import type { Signal } from "@adapters/polymarket/signals";
 import type { Evaluator } from "@/lib/agents/types";
 
 // Synthetic args/context builders

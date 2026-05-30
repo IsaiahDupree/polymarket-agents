@@ -26,6 +26,11 @@ beforeEach(() => {
   memDb?.close(); memDb = null;
   process.env.ALLOW_AUTO_PROMOTE = "1";
   process.env.ARENA_LIVE_CAPITAL_TOTAL_USD = "30";
+  // Disable the operator-set lifetime PnL gate (default $96) for these
+  // tests — they seed agents with small realized PnL by design to exercise
+  // selection logic, not the gate itself. The gate is exercised separately
+  // in arena-auto-promote-pnl-gate.test.ts if needed.
+  process.env.MIN_LIVE_CAPSULE_PNL_USD = "0";
 });
 
 async function seedAgent(opts: {

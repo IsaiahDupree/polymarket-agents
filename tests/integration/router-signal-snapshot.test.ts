@@ -18,10 +18,10 @@ vi.mock("@/lib/db/client", () => ({
 }));
 
 import * as dbModule from "@/lib/db/client";
-import { ExecutionRouter, resetDefaultRouterForTests } from "@/lib/venue/router";
-import { SimAdapter } from "@/lib/venue/adapters/sim";
+import { ExecutionRouter, resetDefaultRouterForTests } from "@core/venue/router";
+import { SimAdapter } from "@adapters/sim/adapter";
 import { insertEvolutionEvent } from "@/lib/db/queries";
-import type { UnifiedOrder } from "@/lib/venue/types";
+import type { UnifiedOrder } from "@core/venue/types";
 
 beforeEach(() => {
   memDb?.close();

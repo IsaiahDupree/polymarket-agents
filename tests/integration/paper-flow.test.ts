@@ -19,13 +19,13 @@ vi.mock("@/lib/db/client", () => ({
 }));
 
 import * as dbModule from "@/lib/db/client";
-import { createCapsule, setStatus } from "@/lib/capsules/store";
-import { ExecutionRouter } from "@/lib/venue/router";
-import { SimAdapter } from "@/lib/venue/adapters/sim";
-import { RiskEngine } from "@/lib/risk/engine";
-import { KillSwitch } from "@/lib/risk/kill-switch";
-import { listOrderEvents } from "@/lib/venue/order-events";
-import { setVersionStage } from "@/lib/stages/gate";
+import { createCapsule, setStatus } from "@risk/capsules/store";
+import { ExecutionRouter } from "@core/venue/router";
+import { SimAdapter } from "@adapters/sim/adapter";
+import { RiskEngine } from "@risk/engine";
+import { KillSwitch } from "@risk/kill-switch";
+import { listOrderEvents } from "@core/venue/order-events";
+import { setVersionStage } from "@oms/stages/gate";
 
 function seedAgentAndVersion(): { agentId: number; strategyId: number; versionId: number } {
   // Go through the mocked db() so memDb is lazily initialized — matches the

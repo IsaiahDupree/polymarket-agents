@@ -1,8 +1,18 @@
 import Database from "better-sqlite3";
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const DB_PATH = process.env.POLYMARKET_DB_PATH ?? resolve(process.cwd(), "data", "polymarket.db");
+// Anchor file-system paths to the workspace ROOT, not process.cwd().
+// `npm run -w @polymarket-agents/web` invokes next dev with cwd=apps/web/,
+// so anything resolved against cwd ends up at apps/web/src/lib/db/... which
+// doesn't exist. This file lives at <root>/src/lib/db/client.ts, so going up
+// 3 levels from its dir reaches the workspace root reliably.
+const __thisFile = fileURLToPath(import.meta.url);
+const REPO_ROOT = resolve(dirname(__thisFile), "..", "..", "..");
+
+const DB_PATH = process.env.POLYMARKET_DB_PATH ?? resolve(REPO_ROOT, "data", "polymarket.db");
+const SCHEMA_PATH = resolve(REPO_ROOT, "src", "lib", "db", "schema.sql");
 
 let cached: Database.Database | null = null;
 
@@ -19,8 +29,11 @@ export function db(): Database.Database {
   // the second writer wait its turn. (2026-05-25 worker:realtime crash:
   // 200K writes succeeded, 200,001st lost to BUSY because the tick ran
   // simultaneously.)
-  handle.pragma("busy_timeout = 5000");
-  const schema = readFileSync(resolve(process.cwd(), "src/lib/db/schema.sql"), "utf8");
+  // 2026-05-30: bumped to 30s. arena:tick can hold a write txn for 30s+ when
+  // it's iterating 24 elites; with the staged-stake workers also writing
+  // (graduate, stake-promoter), 5s wasn't enough headroom on a busy day.
+  handle.pragma("busy_timeout = 30000");
+  const schema = readFileSync(SCHEMA_PATH, "utf8");
   handle.exec(schema);
   runLightMigrations(handle);
   cached = handle;

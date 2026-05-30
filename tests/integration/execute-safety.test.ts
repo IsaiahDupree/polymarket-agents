@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeMemoryDb } from "../helpers/db";
 import { samplePair } from "../helpers/fixtures";
-import type { SingleMarketArb } from "@/lib/polymarket/arb";
+import type { SingleMarketArb } from "@adapters/polymarket/arb";
 
 let memDb: ReturnType<typeof makeMemoryDb> | null = null;
 vi.mock("@/lib/db/client", () => ({
@@ -11,7 +11,7 @@ vi.mock("@/lib/db/client", () => ({
   },
 }));
 
-import { executeSingleMarketArb, safety } from "@/lib/polymarket/execute";
+import { executeSingleMarketArb, safety } from "@adapters/polymarket/execute";
 
 beforeEach(() => {
   memDb?.close();

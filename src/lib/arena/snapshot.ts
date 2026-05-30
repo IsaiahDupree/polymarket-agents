@@ -3,11 +3,11 @@
  * Next.js API can trigger live data refreshes on demand (button click) and
  * not just on cron.
  */
-import { poly } from "@/lib/polymarket/client";
-import { cb } from "@/lib/coinbase/client";
+import { poly } from "@adapters/polymarket/client";
+import { cb } from "@adapters/coinbase/client";
 import { okx } from "@/lib/okx/client";
 import { recordMarketSnapshot } from "@/lib/db/queries";
-import { classifyMarket } from "@/lib/polymarket/category";
+import { classifyMarket } from "@adapters/polymarket/category";
 import { db } from "@/lib/db/client";
 import { fetchShortBinaries, type BinaryAsset } from "./short-binaries";
 

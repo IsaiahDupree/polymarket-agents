@@ -20,12 +20,12 @@
  * so an LLM evaluator can stringify it into its prompt without surgery.
  */
 import { db } from "@/lib/db/client";
-import { listCapsules } from "@/lib/capsules/store";
-import type { Capsule } from "@/lib/capsules/types";
-import { getDefaultKillSwitch } from "@/lib/risk/kill-switch";
-import { getDefaultRouter } from "@/lib/venue/router";
-import type { RiskLimits } from "@/lib/risk/types";
-import { listOrderEvents, type OrderEventRow } from "@/lib/venue/order-events";
+import { listCapsules } from "@risk/capsules/store";
+import type { Capsule } from "@risk/capsules/types";
+import { getDefaultKillSwitch } from "@risk/kill-switch";
+import { getDefaultRouter } from "@core/venue/router";
+import type { RiskLimits } from "@risk/types";
+import { listOrderEvents, type OrderEventRow } from "@core/venue/order-events";
 
 export type EvolutionEventRow = {
   id: number;

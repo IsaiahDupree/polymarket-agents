@@ -46,7 +46,7 @@ describe("capsule circuit breaker", () => {
     await seedCapsule("cap-1", "live");
     for (let i = 0; i < 4; i++) await seedEvent("single-error", "cap-1", "rejected", 1);
 
-    const { runCircuitBreaker } = await import("@/lib/capsules/circuit-breaker");
+    const { runCircuitBreaker } = await import("@risk/capsules/circuit-breaker");
     const r = runCircuitBreaker({ threshold: 5, windowMin: 15 });
     expect(r.paused).toHaveLength(0);
     expect(r.inspected).toBe(1);
@@ -56,14 +56,14 @@ describe("capsule circuit breaker", () => {
     await seedCapsule("cap-2", "live");
     for (let i = 0; i < 6; i++) await seedEvent("single-error", "cap-2", "Trading restricted geoblock", 2);
 
-    const { runCircuitBreaker } = await import("@/lib/capsules/circuit-breaker");
+    const { runCircuitBreaker } = await import("@risk/capsules/circuit-breaker");
     const r = runCircuitBreaker({ threshold: 5, windowMin: 15 });
     expect(r.paused).toHaveLength(1);
     expect(r.paused[0].capsule_id).toBe("cap-2");
     expect(r.paused[0].error_count).toBe(6);
     expect(r.paused[0].reason).toMatch(/geoblock/);
 
-    const { getCapsule } = await import("@/lib/capsules/store");
+    const { getCapsule } = await import("@risk/capsules/store");
     expect(getCapsule("cap-2")?.status).toBe("paused");
   });
 
@@ -72,7 +72,7 @@ describe("capsule circuit breaker", () => {
     for (let i = 0; i < 6; i++) await seedEvent("single-error", "cap-3", "transient", 5);
     await seedEvent("single-executed", "cap-3", "filled", 1);
 
-    const { runCircuitBreaker } = await import("@/lib/capsules/circuit-breaker");
+    const { runCircuitBreaker } = await import("@risk/capsules/circuit-breaker");
     const r = runCircuitBreaker({ threshold: 5, windowMin: 15 });
     expect(r.paused).toHaveLength(0);
   });
@@ -82,7 +82,7 @@ describe("capsule circuit breaker", () => {
     // 6 errors but all 30 min ago (outside default 15-min window)
     for (let i = 0; i < 6; i++) await seedEvent("single-error", "cap-4", "old", 30);
 
-    const { runCircuitBreaker } = await import("@/lib/capsules/circuit-breaker");
+    const { runCircuitBreaker } = await import("@risk/capsules/circuit-breaker");
     const r = runCircuitBreaker({ threshold: 5, windowMin: 15 });
     expect(r.paused).toHaveLength(0);
   });
@@ -91,7 +91,7 @@ describe("capsule circuit breaker", () => {
     await seedCapsule("cap-5", "live");
     for (let i = 0; i < 5; i++) await seedEvent("single-error", "cap-5", "auth fail", 1);
 
-    const { runCircuitBreaker } = await import("@/lib/capsules/circuit-breaker");
+    const { runCircuitBreaker } = await import("@risk/capsules/circuit-breaker");
     runCircuitBreaker({ threshold: 5, windowMin: 15 });
 
     const { db } = await import("@/lib/db/client");
@@ -105,7 +105,7 @@ describe("capsule circuit breaker", () => {
     await seedCapsule("cap-6", "paused");
     for (let i = 0; i < 10; i++) await seedEvent("single-error", "cap-6", "err", 1);
 
-    const { runCircuitBreaker } = await import("@/lib/capsules/circuit-breaker");
+    const { runCircuitBreaker } = await import("@risk/capsules/circuit-breaker");
     const r = runCircuitBreaker({ threshold: 5, windowMin: 15 });
     expect(r.inspected).toBe(0); // 'paused' status is not in (live, paper)
     expect(r.paused).toHaveLength(0);
@@ -118,7 +118,7 @@ describe("capsule circuit breaker", () => {
     const orig = process.env.CAPSULE_ERROR_THRESHOLD;
     process.env.CAPSULE_ERROR_THRESHOLD = "3";
     try {
-      const { runCircuitBreaker } = await import("@/lib/capsules/circuit-breaker");
+      const { runCircuitBreaker } = await import("@risk/capsules/circuit-breaker");
       const r = runCircuitBreaker({}); // use env, not opts
       expect(r.paused).toHaveLength(1);
     } finally {

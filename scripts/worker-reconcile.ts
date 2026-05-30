@@ -1,5 +1,5 @@
 import "./_env.ts";
-import { reconcileCoinbase, reconcilePolymarket } from "../src/lib/reconcile/loop.ts";
+import { reconcileCoinbase, reconcilePolymarket } from "@oms/reconcile/loop";
 
 function logSummary(label: string, s: Awaited<ReturnType<typeof reconcileCoinbase>>) {
   console.log(

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { RiskEngine, emptyPortfolio } from "@/lib/risk/engine";
-import type { RiskLimits } from "@/lib/risk/types";
+import { RiskEngine, emptyPortfolio } from "@risk/engine";
+import type { RiskLimits } from "@risk/types";
 
 function makeEngine(overrides: Partial<RiskLimits> = {}): RiskEngine {
   const defaults: RiskLimits = {

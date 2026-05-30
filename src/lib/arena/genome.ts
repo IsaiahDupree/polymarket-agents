@@ -466,11 +466,33 @@ export function serializeGenome(g: Genome): string {
   return JSON.stringify(g);
 }
 export function parseGenome(json: string): Genome {
-  return GenomeSchema.parse(JSON.parse(json));
+  // Strict path: validate against the Zod discriminated union.
+  // Fallback path: when an agent in the DB has a `kind` that pre-dates the
+  // current schema (e.g. an experimental kind seeded by a script that was
+  // never registered in GENOME_KINDS), DON'T crash the entire page rendering
+  // a list of agents. Return a permissive shape with the raw kind + params
+  // and let downstream callers (genomeNickname, paramsToRows, etc.) treat it
+  // as a leaf strategy. The actual decide() dispatch in sim.ts still 404s
+  // unknown kinds and the operator sees the same agent rows; this just keeps
+  // the page from 500ing.
+  try {
+    return GenomeSchema.parse(JSON.parse(json));
+  } catch {
+    try {
+      const raw = JSON.parse(json) as { kind?: string; params?: Record<string, unknown> };
+      return { kind: raw.kind ?? "unknown", params: raw.params ?? {} } as unknown as Genome;
+    } catch {
+      return { kind: "unknown", params: {} } as unknown as Genome;
+    }
+  }
 }
 
 /** Human-friendly short name used in agent names (e.g. "fade-spike", "cb-bo"). */
 export function genomeNickname(g: Genome): string {
+  // Default fallback for any kind not explicitly handled below — supports the
+  // fallback shape returned by parseGenome() when an agent's kind is not in
+  // GENOME_KINDS (e.g. experimental kinds seeded but never registered).
+  const kindStr = String((g as { kind?: string }).kind ?? "unknown");
   switch (g.kind) {
     case "poly_fade_spike": return "fade-spike";
     case "poly_breakout": return "poly-bo";
@@ -488,5 +510,9 @@ export function genomeNickname(g: Genome): string {
       const subKinds = g.params.subs.map((s) => s.kind.replace("cb_", "").replace("poly_", "").slice(0, 4));
       return `multi-${subKinds.join("+")}`;
     }
+    default:
+      // Unknown kind (e.g. parseGenome() fallback shape). Strip prefixes
+      // for compactness and call it done.
+      return kindStr.replace(/^(poly|cb)_/, "");
   }
 }

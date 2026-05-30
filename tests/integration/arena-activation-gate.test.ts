@@ -160,18 +160,18 @@ describe("activateCapsule — gate logic", () => {
 describe("safety mode defaults — read-only sanity checks", () => {
   it("Polymarket safety.mode() returns DRY_RUN when ALLOW_TRADE is unset", async () => {
     delete process.env.ALLOW_TRADE;
-    const { safety } = await import("@/lib/polymarket/execute");
+    const { safety } = await import("@adapters/polymarket/execute");
     expect(safety.mode()).toBe("DRY_RUN");
   });
 
   it("Coinbase cbSafety.mode() returns DRY_RUN when COINBASE_ALLOW_TRADE is unset", async () => {
     delete process.env.COINBASE_ALLOW_TRADE;
-    const { cbSafety } = await import("@/lib/coinbase/execute");
+    const { cbSafety } = await import("@adapters/coinbase/execute");
     expect(cbSafety.mode()).toBe("DRY_RUN");
   });
 
   it("Polymarket safety.mode() flips to LIVE only on ALLOW_TRADE=1 (not '0' or 'true')", async () => {
-    const { safety } = await import("@/lib/polymarket/execute");
+    const { safety } = await import("@adapters/polymarket/execute");
     process.env.ALLOW_TRADE = "1"; expect(safety.mode()).toBe("LIVE");
     process.env.ALLOW_TRADE = "0"; expect(safety.mode()).toBe("DRY_RUN");
     process.env.ALLOW_TRADE = "true"; expect(safety.mode()).toBe("DRY_RUN");
@@ -179,7 +179,7 @@ describe("safety mode defaults — read-only sanity checks", () => {
   });
 
   it("Coinbase cbSafety.mode() flips to LIVE only on COINBASE_ALLOW_TRADE=1", async () => {
-    const { cbSafety } = await import("@/lib/coinbase/execute");
+    const { cbSafety } = await import("@adapters/coinbase/execute");
     process.env.COINBASE_ALLOW_TRADE = "1"; expect(cbSafety.mode()).toBe("LIVE");
     process.env.COINBASE_ALLOW_TRADE = "0"; expect(cbSafety.mode()).toBe("DRY_RUN");
     delete process.env.COINBASE_ALLOW_TRADE;

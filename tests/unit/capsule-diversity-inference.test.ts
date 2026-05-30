@@ -21,8 +21,8 @@ import {
   inferDiversityProfile,
   isKnownKind,
   knownKinds,
-} from "@/lib/capsules/diversity-inference";
-import type { StrategyFamily } from "@/lib/capsules/types";
+} from "@risk/capsules/diversity-inference";
+import type { StrategyFamily } from "@risk/capsules/types";
 
 describe("inferDiversityProfile", () => {
   it("returns a known profile for poly_short_binary_directional", () => {

@@ -23,7 +23,7 @@ vi.mock("@/lib/db/client", () => ({
 
 // Mock the polymarket client BEFORE module-importing short-binaries.
 const polyEventsCalls: Array<Record<string, unknown>> = [];
-vi.mock("@/lib/polymarket/client", () => ({
+vi.mock("@adapters/polymarket/client", () => ({
   poly: {
     events: vi.fn(async (opts: Record<string, unknown>) => {
       polyEventsCalls.push(opts);

@@ -17,7 +17,7 @@
 import "./_env.ts";
 import { db } from "../src/lib/db/client.ts";
 import { insertEvolutionEvent } from "../src/lib/db/queries.ts";
-import { defaultAavePolygonClient, getAaveAccountData } from "../src/lib/onchain/aave.ts";
+import { defaultAavePolygonClient, getAaveAccountData } from "@adapters/aave/aave";
 
 const args = process.argv.slice(2);
 function flag(name: string): string | undefined {

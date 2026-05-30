@@ -6,7 +6,7 @@
  *   POLYGON_WS_URL=wss://... npm run onchain:watch
  */
 import "./_env.ts";
-import { subscribeOrderFilled, impliedPriceFromFill } from "../src/lib/polymarket/onchain.ts";
+import { subscribeOrderFilled, impliedPriceFromFill } from "@adapters/polymarket/onchain";
 
 let count = 0;
 let connected = false;

@@ -19,7 +19,7 @@
 import "./_env.ts";
 import { db } from "../src/lib/db/client.ts";
 import { insertEvolutionEvent } from "../src/lib/db/queries.ts";
-import { poly } from "../src/lib/polymarket/client.ts";
+import { poly } from "@adapters/polymarket/client";
 import {
   detectCrossTimeframeSpread,
   type SpreadObservation,

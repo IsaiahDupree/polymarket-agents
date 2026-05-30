@@ -16,7 +16,7 @@
  *   - Last successful bridge within 24h refuses unless --force flag is passed
  */
 import "./_env.ts";
-import { runBridge } from "../src/lib/onchain/bridge-runner.ts";
+import { runBridge } from "@adapters/aave/bridge-runner";
 
 const argv = process.argv.slice(2);
 const confirmed   = argv.includes("--confirm");

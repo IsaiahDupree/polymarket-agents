@@ -26,7 +26,7 @@ afterEach(() => {
 
 describe("proxy-routing — config detection", () => {
   it("proxyStatus() returns disabled when env var is unset", async () => {
-    const { proxyStatus } = await import("@/lib/polymarket/proxy-routing");
+    const { proxyStatus } = await import("@adapters/polymarket/proxy-routing");
     const s = proxyStatus();
     expect(s.enabled).toBe(false);
     expect(s.host).toBeUndefined();
@@ -35,7 +35,7 @@ describe("proxy-routing — config detection", () => {
 
   it("proxyStatus() returns enabled+host when env var is set", async () => {
     process.env.POLYMARKET_PROXY_URL = "http://user:pass@198.105.121.200:6462";
-    const { proxyStatus } = await import("@/lib/polymarket/proxy-routing");
+    const { proxyStatus } = await import("@adapters/polymarket/proxy-routing");
     const s = proxyStatus();
     expect(s.enabled).toBe(true);
     expect(s.host).toBe("198.105.121.200:6462");
@@ -43,21 +43,21 @@ describe("proxy-routing — config detection", () => {
 
   it("proxyStatus() returns disabled for malformed env var (no parsing crash)", async () => {
     process.env.POLYMARKET_PROXY_URL = "not-a-url";
-    const { proxyStatus } = await import("@/lib/polymarket/proxy-routing");
+    const { proxyStatus } = await import("@adapters/polymarket/proxy-routing");
     expect(proxyStatus().enabled).toBe(false);
   });
 });
 
 describe("proxy-routing — installProxyRoutingOnce", () => {
   it("is a no-op when POLYMARKET_PROXY_URL is unset", async () => {
-    const { installProxyRoutingOnce } = await import("@/lib/polymarket/proxy-routing");
+    const { installProxyRoutingOnce } = await import("@adapters/polymarket/proxy-routing");
     // Should not throw and should not register any axios interceptor.
     expect(() => installProxyRoutingOnce()).not.toThrow();
   });
 
   it("is idempotent — second call does not add a second interceptor", async () => {
     process.env.POLYMARKET_PROXY_URL = "http://u:p@1.2.3.4:9999";
-    const { installProxyRoutingOnce } = await import("@/lib/polymarket/proxy-routing");
+    const { installProxyRoutingOnce } = await import("@adapters/polymarket/proxy-routing");
     const axios = (await import("axios")).default;
     const interceptorsBefore = (axios.interceptors.request as any).handlers?.length ?? 0;
     installProxyRoutingOnce();
@@ -73,7 +73,7 @@ describe("proxy-routing — polyFetch passthrough behavior", () => {
   it("falls back to native fetch when no proxy is configured", async () => {
     const mockFetch = vi.fn().mockResolvedValue(new Response("ok"));
     vi.stubGlobal("fetch", mockFetch);
-    const { polyFetch } = await import("@/lib/polymarket/proxy-routing");
+    const { polyFetch } = await import("@adapters/polymarket/proxy-routing");
     const r = await polyFetch("https://clob.polymarket.com/markets");
     expect(r.status).toBe(200);
     expect(mockFetch).toHaveBeenCalledTimes(1);
@@ -86,7 +86,7 @@ describe("proxy-routing — polyFetch passthrough behavior", () => {
     process.env.POLYMARKET_PROXY_URL = "http://u:p@1.2.3.4:9999";
     const mockFetch = vi.fn().mockResolvedValue(new Response("ok"));
     vi.stubGlobal("fetch", mockFetch);
-    const { polyFetch } = await import("@/lib/polymarket/proxy-routing");
+    const { polyFetch } = await import("@adapters/polymarket/proxy-routing");
     await polyFetch("https://api.coinbase.com/v3/brokerage/products");
     await polyFetch("https://api.anthropic.com/v1/messages", { method: "POST" });
     expect(mockFetch).toHaveBeenCalledTimes(2);

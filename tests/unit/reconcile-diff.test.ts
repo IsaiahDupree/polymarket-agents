@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { diffOrders } from "@/lib/reconcile/diff";
+import { diffOrders } from "@oms/reconcile/diff";
 
 describe("reconcile diff", () => {
   it("returns no drift when local and remote agree", () => {

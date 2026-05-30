@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { applyFillToCapsule } from "@/lib/capsules/journal";
-import type { Capsule } from "@/lib/capsules/types";
+import { applyFillToCapsule } from "@risk/capsules/journal";
+import type { Capsule } from "@risk/capsules/types";
 
 function makeCapsule(over: Partial<Capsule> = {}): Capsule {
   return {

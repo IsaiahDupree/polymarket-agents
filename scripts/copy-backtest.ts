@@ -18,7 +18,7 @@
  */
 import "./_env.ts";
 import { db } from "../src/lib/db/client.ts";
-import { poly } from "../src/lib/polymarket/client.ts";
+import { poly } from "@adapters/polymarket/client";
 import {
   backtestCopyTrades, backtestResolvedOutcomes,
   parseGammaResolvedMarket, type PriceHistorySeries, type ResolvedMarket,

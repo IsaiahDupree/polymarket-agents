@@ -26,8 +26,8 @@ import { randomUUID } from "node:crypto";
 import "./_env.ts";
 import { db } from "../src/lib/db/client.ts";
 import { insertEvolutionEvent } from "../src/lib/db/queries.ts";
-import { getDefaultRouter } from "../src/lib/venue/router.ts";
-import type { UnifiedOrder } from "../src/lib/venue/types.ts";
+import { getDefaultRouter } from "@core/venue/router";
+import type { UnifiedOrder } from "@core/venue/types";
 
 const LIVE = process.env.LATE_SCALP_LIVE === "1" || process.env.LATE_SCALP_LIVE === "true";
 const PER_SIGNAL_USD = Number(process.env.LATE_SCALP_PER_SIGNAL_USD ?? 2);

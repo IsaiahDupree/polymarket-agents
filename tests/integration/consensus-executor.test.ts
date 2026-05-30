@@ -28,7 +28,7 @@ const submitSpy = vi.fn(async (_order: any) => ({
   usdEquivalent: 10,
 }));
 
-vi.mock("@/lib/venue/router", () => ({
+vi.mock("@core/venue/router", () => ({
   getDefaultRouter: () => ({
     submit: submitSpy,
   }),

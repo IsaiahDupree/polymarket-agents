@@ -10,7 +10,7 @@ vi.mock("@/lib/db/client", () => ({
   closeDb: () => { memDb?.close(); memDb = null; },
 }));
 
-import { appendOrderEvent, listOrderEvents, verifyChain } from "@/lib/venue/order-events";
+import { appendOrderEvent, listOrderEvents, verifyChain } from "@core/venue/order-events";
 
 beforeEach(() => {
   memDb?.close();

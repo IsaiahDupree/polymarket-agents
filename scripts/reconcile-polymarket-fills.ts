@@ -25,7 +25,7 @@
  * Safe to run with ALLOW_TRADE=0 — purely read-only; no orders submitted.
  */
 import "./_env.ts";
-import { poly } from "../src/lib/polymarket/client.ts";
+import { poly } from "@adapters/polymarket/client";
 import { insertEvolutionEvent } from "../src/lib/db/queries.ts";
 import { reconcileFills, type ClobTrade } from "../src/lib/arena/reconcile-polymarket.ts";
 

@@ -31,7 +31,7 @@
  */
 import "./_env.ts";
 import { db as openDb } from "../src/lib/db/client.ts";
-import { polyFetch } from "../src/lib/polymarket/proxy-routing.ts";
+import { polyFetch } from "@adapters/polymarket/proxy-routing";
 
 type Args = { dryRun: boolean; lookbackDays: number; limit: number };
 

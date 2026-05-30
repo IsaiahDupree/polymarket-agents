@@ -12,7 +12,7 @@
  *   npx tsx scripts/audit-wallet.ts --address 0x...   # override env
  */
 import "./_env.ts";
-import { polyFetch } from "../src/lib/polymarket/proxy-routing.ts";
+import { polyFetch } from "@adapters/polymarket/proxy-routing";
 
 type Position = {
   conditionId: string;

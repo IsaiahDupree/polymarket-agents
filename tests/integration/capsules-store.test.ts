@@ -17,7 +17,7 @@ import {
   listCapsules,
   setStatus,
   updateRealtime,
-} from "@/lib/capsules/store";
+} from "@risk/capsules/store";
 
 beforeEach(() => {
   memDb?.close();

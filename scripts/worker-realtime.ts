@@ -17,7 +17,7 @@
  * lives next to the scribe-sports evaluator (TODO).
  */
 import "./_env.ts";
-import { ConnectionStatus, PolymarketRealtime, hasClobCreds } from "../src/lib/polymarket/realtime.ts";
+import { ConnectionStatus, PolymarketRealtime, hasClobCreds } from "@adapters/polymarket/realtime";
 import { insertEvolutionEvent } from "../src/lib/db/queries.ts";
 import { db } from "../src/lib/db/client.ts";
 import { persistRealtimeTick, pruneOldTicks, wsHealth, droppedBusyCount } from "../src/lib/arena/realtime-ticks.ts";

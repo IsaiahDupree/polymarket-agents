@@ -8,12 +8,12 @@
  *  - Invalid order type returns INVALID_INPUT
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { UnifiedOrder } from "@/lib/venue/types";
+import type { UnifiedOrder } from "@core/venue/types";
 
 // Track calls into the underlying execute helper.
 const calls: Array<{ tokenId: string; side: string; sizeUsd: number }> = [];
 
-vi.mock("@/lib/polymarket/execute", () => ({
+vi.mock("@adapters/polymarket/execute", () => ({
   submitSingleSideMarket: vi.fn(async (args: { tokenId: string; side: string; sizeUsd: number; refPrice: number }) => {
     calls.push({ tokenId: args.tokenId, side: args.side, sizeUsd: args.sizeUsd });
     return {
@@ -33,7 +33,7 @@ afterEach(() => { vi.clearAllMocks(); });
 
 describe("PolymarketAdapter — MARKET path", () => {
   it("BUY YES routes to submitSingleSideMarket with the YES token", async () => {
-    const { PolymarketAdapter } = await import("@/lib/venue/adapters/polymarket");
+    const { PolymarketAdapter } = await import("@adapters/polymarket/adapter");
     const adapter = new PolymarketAdapter();
     const order: UnifiedOrder = {
       clientOrderId: "test-1",
@@ -54,7 +54,7 @@ describe("PolymarketAdapter — MARKET path", () => {
   });
 
   it("SELL-YES entry with no_token_id swaps to BUY NO", async () => {
-    const { PolymarketAdapter } = await import("@/lib/venue/adapters/polymarket");
+    const { PolymarketAdapter } = await import("@adapters/polymarket/adapter");
     const adapter = new PolymarketAdapter();
     const order: UnifiedOrder = {
       clientOrderId: "test-2",
@@ -74,7 +74,7 @@ describe("PolymarketAdapter — MARKET path", () => {
   });
 
   it("SELL-YES entry WITHOUT no_token_id keeps SELL YES (exit-like)", async () => {
-    const { PolymarketAdapter } = await import("@/lib/venue/adapters/polymarket");
+    const { PolymarketAdapter } = await import("@adapters/polymarket/adapter");
     const adapter = new PolymarketAdapter();
     const order: UnifiedOrder = {
       clientOrderId: "test-3",
@@ -93,7 +93,7 @@ describe("PolymarketAdapter — MARKET path", () => {
   });
 
   it("rejects an unknown order type with INVALID_INPUT", async () => {
-    const { PolymarketAdapter } = await import("@/lib/venue/adapters/polymarket");
+    const { PolymarketAdapter } = await import("@adapters/polymarket/adapter");
     const adapter = new PolymarketAdapter();
     const order: UnifiedOrder = {
       clientOrderId: "test-4",

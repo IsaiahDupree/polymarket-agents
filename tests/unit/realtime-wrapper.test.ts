@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasClobCreds, PolymarketRealtime, readCredsFromEnv } from "@/lib/polymarket/realtime";
+import { hasClobCreds, PolymarketRealtime, readCredsFromEnv } from "@adapters/polymarket/realtime";
 
 // Don't actually connect — these tests verify the wrapper's shape without
 // touching network. Live verification belongs in a script run by the operator.

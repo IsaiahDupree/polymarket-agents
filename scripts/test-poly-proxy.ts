@@ -9,7 +9,7 @@
  * Run: `npx tsx scripts/test-poly-proxy.ts`
  */
 import "./_env";
-import { installProxyRoutingOnce, polyFetch, proxyStatus } from "../src/lib/polymarket/proxy-routing";
+import { installProxyRoutingOnce, polyFetch, proxyStatus } from "@adapters/polymarket/proxy-routing";
 import axios from "axios";
 
 (async () => {

@@ -11,7 +11,7 @@ vi.mock("@/lib/db/client", () => ({
 }));
 
 import * as dbModule from "@/lib/db/client";
-import { checkPromotionScore, setVersionStage } from "@/lib/stages/gate";
+import { checkPromotionScore, setVersionStage } from "@oms/stages/gate";
 
 function seedVersion(stage: string, summary: Record<string, unknown> | null = null): number {
   const db = (dbModule as any).db();

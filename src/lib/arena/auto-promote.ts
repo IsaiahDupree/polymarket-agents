@@ -38,9 +38,9 @@ import { db } from "@/lib/db/client";
 import { insertEvolutionEvent } from "@/lib/db/queries";
 import { listAliveElites, listAliveAgentsAcrossGens } from "./db";
 import { rankAgents } from "./score";
-import { createCapsule, getCapsule, setStatus } from "@/lib/capsules/store";
+import { createCapsule, getCapsule, setStatus } from "@risk/capsules/store";
 import { readRiskBudgetFromEnv } from "./risk-budget";
-import { inferDiversityProfile } from "@/lib/capsules/diversity-inference";
+import { inferDiversityProfile } from "@risk/capsules/diversity-inference";
 import { allocateByFitness } from "./fitness-allocation";
 import {
   decideKindEligibility,

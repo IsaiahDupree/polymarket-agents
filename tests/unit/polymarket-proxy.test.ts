@@ -8,7 +8,7 @@
  * address that actually appears in OrderFilled events.
  */
 import { describe, expect, it } from "vitest";
-import { extractFillParticipants, resolveOnchainAddress, walletAppearsOnchain } from "../../src/lib/polymarket/proxy";
+import { extractFillParticipants, resolveOnchainAddress, walletAppearsOnchain } from "@adapters/polymarket/proxy";
 
 const ORDER_FILLED_T0 = "0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee";
 const pad32 = (addr: string) => "0x" + "0".repeat(24) + addr.slice(2).toLowerCase();

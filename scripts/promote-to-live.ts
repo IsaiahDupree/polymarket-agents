@@ -25,7 +25,7 @@
 import "./_env.ts";
 import { db } from "../src/lib/db/client.ts";
 import { getPaperAgent } from "../src/lib/arena/db.ts";
-import { createCapsule, setStatus, getCapsule } from "../src/lib/capsules/store.ts";
+import { createCapsule, setStatus, getCapsule } from "@risk/capsules/store";
 import { insertEvolutionEvent } from "../src/lib/db/queries.ts";
 
 type Opts = {

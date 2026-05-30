@@ -7,11 +7,11 @@
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { env } from "./_env.ts";
-import { l1Headers } from "../src/lib/polymarket/sign.ts";
+import { l1Headers } from "@adapters/polymarket/sign";
 // Use proxy-aware fetch — derive endpoint is on clob.polymarket.com which is
 // geo-restricted. polyFetch routes through Webshare GB when POLYMARKET_PROXY_URL
 // is set, otherwise behaves like native fetch.
-import { polyFetch } from "../src/lib/polymarket/proxy-routing.ts";
+import { polyFetch } from "@adapters/polymarket/proxy-routing";
 
 async function deriveOrCreate(): Promise<{ apiKey: string; secret: string; passphrase: string }> {
   if (!env.PRIVATE_KEY) throw new Error("POLYMARKET_PRIVATE_KEY missing in .env.local");

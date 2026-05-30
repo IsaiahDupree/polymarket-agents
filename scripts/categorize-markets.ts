@@ -10,7 +10,7 @@
  */
 import "./_env.ts";
 import { db } from "../src/lib/db/client.ts";
-import { classifyMarket, type MarketCategory } from "../src/lib/polymarket/category.ts";
+import { classifyMarket, type MarketCategory } from "@adapters/polymarket/category";
 
 const rows = db().prepare(
   `SELECT id, question, condition_id FROM market_snapshots WHERE category IS NULL`,

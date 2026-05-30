@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { computeLeverageAdvice } from "@/lib/onchain/aave-advisor";
-import type { AaveAccountData } from "@/lib/onchain/aave";
+import { computeLeverageAdvice } from "@adapters/aave/aave-advisor";
+import type { AaveAccountData } from "@adapters/aave/aave";
 
 function pos(overrides: Partial<AaveAccountData> = {}): AaveAccountData {
   return {

@@ -17,10 +17,10 @@
  * stop). The resolver in `binary-resolver.ts` force-closes positions when
  * expiry passes.
  */
-import { poly } from "@/lib/polymarket/client";
+import { poly } from "@adapters/polymarket/client";
 import { db } from "@/lib/db/client";
 import { recordMarketSnapshot } from "@/lib/db/queries";
-import { classifyMarket } from "@/lib/polymarket/category";
+import { classifyMarket } from "@adapters/polymarket/category";
 
 /** Assets we know how to interpret. Mapping to Coinbase product when available. */
 export type BinaryAsset = "BTC" | "ETH" | "SOL" | "XRP" | "DOGE" | "BNB" | "HYPE" | "UNKNOWN";

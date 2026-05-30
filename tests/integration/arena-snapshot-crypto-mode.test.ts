@@ -17,7 +17,7 @@ vi.mock("@/lib/db/client", () => ({
 // Mock both clients so we can assert which endpoint was hit.
 const polyCalls: string[] = [];
 const cbCalls: string[] = [];
-vi.mock("@/lib/polymarket/client", () => ({
+vi.mock("@adapters/polymarket/client", () => ({
   poly: {
     samplingMarkets: vi.fn(async (limit: number) => {
       polyCalls.push(`sampling(${limit})`);
@@ -41,7 +41,7 @@ vi.mock("@/lib/polymarket/client", () => ({
     spread: vi.fn(async () => ({ spread: "0.02" })),
   },
 }));
-vi.mock("@/lib/coinbase/client", () => ({
+vi.mock("@adapters/coinbase/client", () => ({
   cb: {
     getBestBidAsk: vi.fn(async () => { cbCalls.push("bba"); return { pricebooks: [] }; }),
     publicGetProduct: vi.fn(async (pid: string) => { cbCalls.push(`prod(${pid})`); return { price: "60000" }; }),

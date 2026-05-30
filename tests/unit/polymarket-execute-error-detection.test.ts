@@ -68,7 +68,7 @@ beforeEach(async () => {
   process.env.POLYMARKET_CLOB_SECRET = "s";
   process.env.POLYMARKET_CLOB_PASSPHRASE = "p";
   fakeClient.createAndPostMarketOrder.mockReset();
-  const { resetClobClientForTests } = await import("@/lib/polymarket/execute");
+  const { resetClobClientForTests } = await import("@adapters/polymarket/execute");
   resetClobClientForTests();
 });
 
@@ -91,7 +91,7 @@ describe("execute.ts broker-error detection (bug #13)", () => {
       error: "Trading restricted in your region, please refer to available regions - https://docs.polymarket.com/developers/CLOB/geoblock",
       status: 403,
     });
-    const { submitSingleSideMarket } = await import("@/lib/polymarket/execute");
+    const { submitSingleSideMarket } = await import("@adapters/polymarket/execute");
     const r = await submitSingleSideMarket({
       tokenId: "0x" + "a".repeat(64),
       side: "BUY", sizeUsd: 5, refPrice: 0.5, rationale: "test",
@@ -107,7 +107,7 @@ describe("execute.ts broker-error detection (bug #13)", () => {
 
   it("Bare 4xx without error message → single-error", async () => {
     stubFetchResponse({ status: 429 });
-    const { submitSingleSideMarket } = await import("@/lib/polymarket/execute");
+    const { submitSingleSideMarket } = await import("@adapters/polymarket/execute");
     const r = await submitSingleSideMarket({
       tokenId: "0x" + "b".repeat(64),
       side: "BUY", sizeUsd: 5, refPrice: 0.5, rationale: "test",
@@ -123,7 +123,7 @@ describe("execute.ts broker-error detection (bug #13)", () => {
     stubFetchResponse({
       errorMsg: "insufficient allowance",
     });
-    const { submitSingleSideMarket } = await import("@/lib/polymarket/execute");
+    const { submitSingleSideMarket } = await import("@adapters/polymarket/execute");
     const r = await submitSingleSideMarket({
       tokenId: "0x" + "c".repeat(64),
       side: "BUY", sizeUsd: 5, refPrice: 0.5, rationale: "test",
@@ -137,7 +137,7 @@ describe("execute.ts broker-error detection (bug #13)", () => {
       success: true,
       orderID: "0xabc",
     });
-    const { submitSingleSideMarket } = await import("@/lib/polymarket/execute");
+    const { submitSingleSideMarket } = await import("@adapters/polymarket/execute");
     const r = await submitSingleSideMarket({
       tokenId: "0x" + "d".repeat(64),
       side: "BUY", sizeUsd: 5, refPrice: 0.5, rationale: "test",
@@ -157,7 +157,7 @@ describe("execute.ts broker-error detection (bug #13)", () => {
       orderID: "0xfeed",
       orderHashes: ["0xhash"],
     });
-    const { submitSingleSideMarket } = await import("@/lib/polymarket/execute");
+    const { submitSingleSideMarket } = await import("@adapters/polymarket/execute");
     const r = await submitSingleSideMarket({
       tokenId: "0x" + "e".repeat(64),
       side: "BUY", sizeUsd: 5, refPrice: 0.5, rationale: "test",

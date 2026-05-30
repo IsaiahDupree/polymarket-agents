@@ -5,7 +5,7 @@
  * needs an update.
  */
 import { describe, expect, it } from "vitest";
-import { poly } from "@/lib/polymarket/client";
+import { poly } from "@adapters/polymarket/client";
 
 const RUN_E2E = process.env.RUN_E2E === "1";
 const e2eIt = RUN_E2E ? it : it.skip;

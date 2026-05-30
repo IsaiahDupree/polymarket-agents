@@ -128,6 +128,15 @@ const EVOLVE_EVERY = Number(process.env.ARENA_EVOLVE_EVERY ?? "50");
             if (res.trade.intent === "entry") stats.entries += 1;
             if (res.trade.intent === "exit")  stats.exits   += 1;
           }
+          // Multi-leg signals emit additional trades beyond res.trade — they
+          // must be persisted too or the second leg of an arbitrage vanishes.
+          if (res.extra_trades && res.extra_trades.length > 0) {
+            for (const t of res.extra_trades) {
+              insertPaperTrade(t);
+              if (t.intent === "entry") stats.entries += 1;
+              if (t.intent === "exit")  stats.exits   += 1;
+            }
+          }
           // Attach live-routing audit fields to the just-created position so
           // the resolver/exit paths can settle against the actual filled
           // token (= NO token after a SELL→BUY-NO swap on a poly directional).
