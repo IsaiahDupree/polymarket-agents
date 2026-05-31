@@ -20,7 +20,7 @@ import { peekOracleCache } from "./llm-oracle";
 import { assetToFeed, assetToCbProduct, getBinaryMeta, type BinaryAsset } from "./short-binaries";
 import { buildTransitionMatrix, monteCarlo, priceToState } from "@/lib/quant/markov";
 import { calibrateProbability } from "@/lib/quant/becker-calibration";
-import { arbitrageEdge, repricingEdge } from "@/lib/quant/microstructure";
+import { arbitrageEdge, directionalArbTilt, nearResolutionEdge, repricingEdge } from "@/lib/quant/microstructure";
 import {
   parseDurationMin, minToResolution, eventPhase, coinbaseTickAgeSec, matchesPhase,
   type EventPhaseFilter,
@@ -346,6 +346,8 @@ function decideForSub(g: import("./genome").SubGenome, agent: LiveAgent, ctx: Ti
     case "markov_persistence":   return decideMarkovPersistence(g, agent, ctx);
     case "poly_arbitrage_set":   return decidePolyArbitrageSet(g, agent, ctx);
     case "poly_repricing":       return decidePolyRepricing(g, agent, ctx);
+    case "poly_directional_arb_tilt": return decidePolyDirectionalArbTilt(g, agent, ctx);
+    case "poly_near_resolution": return decidePolyNearResolution(g, agent, ctx);
   }
 }
 
@@ -570,6 +572,8 @@ export function decide(agent: LiveAgent, ctx: TickContext, rng: () => number): S
     case "markov_persistence":   return decideMarkovPersistence(g, agent, ctx);
     case "poly_arbitrage_set":   return decidePolyArbitrageSet(g, agent, ctx);
     case "poly_repricing":       return decidePolyRepricing(g, agent, ctx);
+    case "poly_directional_arb_tilt": return decidePolyDirectionalArbTilt(g, agent, ctx);
+    case "poly_near_resolution": return decidePolyNearResolution(g, agent, ctx);
     case "multi_strategy":        return decideMultiStrategy(g, agent, ctx, rng);
   }
 }
@@ -882,6 +886,129 @@ function decidePolyRepricing(
       size_usd,
       rationale: `repricing: ${op.detail} spot=${spotPrice.toFixed(2)} strike=${strike.toFixed(2)}`,
       time_stop_at: new Date(new Date(ctx.now).getTime() + 24 * 3_600_000).toISOString(),
+    };
+  }
+  return holdSignal();
+}
+
+/**
+ * Polymarket directional arb tilt — port of polymarket-2dollar-bot
+ * polybot/microstructure.py `directional_arb_tilt()`. Requires both an
+ * arb base (YES + NO + fees < $1) AND a velocity-based model view, then
+ * tilts toward the under-priced side. Asymmetric but the arb floor still
+ * bounds downside — losses are capped at the set cost minus payout.
+ *
+ * Velocity model: linear in price change over a configurable window. A
+ * positive velocity (recent price rising) says YES is the under-priced
+ * side. Threshold 5x to project [-0.20, +0.20] onto [0, 1].
+ */
+function decidePolyDirectionalArbTilt(
+  g: Extract<Genome, { kind: "poly_directional_arb_tilt" }>,
+  agent: LiveAgent,
+  ctx: TickContext,
+): Signal {
+  for (const [mid, win] of ctx.snapshots) {
+    if (win.latest.venue !== "sim-poly") continue;
+    if (agent.positions.some((p) => p.market_id === mid)) continue;
+
+    const yesAsk = Number.isFinite(win.latest.ask)
+      ? (win.latest.ask as number)
+      : Math.min(0.999, win.latest.price + 0.005);
+    const yesBid = Number.isFinite(win.latest.bid)
+      ? (win.latest.bid as number)
+      : Math.max(0.001, win.latest.price - 0.005);
+    const noAsk = Math.min(0.999, 1 - yesBid + 0.005);
+    if (yesAsk + noAsk > g.params.max_set_cost) continue;
+
+    // Velocity-based model probability for YES.
+    const windowMs = g.params.model_window_min * 60_000;
+    const cutoffMs = new Date(ctx.now).getTime() - windowMs;
+    const past = win.history.find(
+      (s) => new Date(s.captured_at).getTime() >= cutoffMs,
+    ) ?? win.history[0];
+    const velocity = win.latest.price - past.price;
+    const modelPYes = Math.max(0, Math.min(1, 0.5 + velocity * 5));
+
+    const op = directionalArbTilt(yesAsk, noAsk, modelPYes, g.params.fee_bps);
+    if (!op) continue;
+    if (op.edge < g.params.min_edge) continue;
+
+    const side: "BUY" | "SELL" = op.side === "YES" ? "BUY" : "SELL";
+    const size_usd = Math.min(g.params.entry_size_usd, agent.cash_usd_current);
+    if (size_usd <= 0) continue;
+
+    return {
+      kind: "entry",
+      venue: "sim-poly",
+      market_id: mid,
+      side,
+      size_usd,
+      rationale: `directional_arb_tilt: ${op.detail} velocity=${velocity.toFixed(3)}`,
+      time_stop_at: new Date(new Date(ctx.now).getTime() + 24 * 3_600_000).toISOString(),
+    };
+  }
+  return holdSignal();
+}
+
+/**
+ * Polymarket near-resolution scrape — port of polymarket-2dollar-bot
+ * polybot/microstructure.py `near_resolution_edge()`. The "$2 → ~$0.30"
+ * trade: buy a side that's near-certain to win but still trades below $1
+ * in the final minutes. High win-rate / small reward, gated on time
+ * remaining (via binary metadata) to bound tail risk.
+ */
+function decidePolyNearResolution(
+  g: Extract<Genome, { kind: "poly_near_resolution" }>,
+  agent: LiveAgent,
+  ctx: TickContext,
+): Signal {
+  const nowMs = new Date(ctx.now).getTime();
+  for (const [mid, win] of ctx.snapshots) {
+    if (win.latest.venue !== "sim-poly") continue;
+    if (agent.positions.some((p) => p.market_id === mid)) continue;
+
+    // Binary metadata is required: we need expiry to compute seconds-left.
+    const meta = getBinaryMeta(mid);
+    if (!meta) continue;
+    const expiryMs = Date.parse(meta.expiry_iso);
+    if (!Number.isFinite(expiryMs)) continue;
+    const secondsLeft = (expiryMs - nowMs) / 1000;
+    if (secondsLeft <= 0) continue;
+
+    // The strategy buys the side currently AT a near-certain price. We
+    // use the YES midpoint to decide which side qualifies. If YES is at
+    // 0.95+, the YES side is the buy; if 0.05-, NO is the buy.
+    const yesPrice = win.latest.price;
+    let winningPrice: number;
+    let side: "BUY" | "SELL";
+    if (yesPrice >= g.params.min_price && yesPrice <= g.params.max_price) {
+      winningPrice = yesPrice;
+      side = "BUY";
+    } else if ((1 - yesPrice) >= g.params.min_price && (1 - yesPrice) <= g.params.max_price) {
+      winningPrice = 1 - yesPrice;
+      side = "SELL";  // selling YES is the same as buying NO
+    } else {
+      continue;
+    }
+
+    const op = nearResolutionEdge(winningPrice, secondsLeft, {
+      minPrice: g.params.min_price,
+      maxPrice: g.params.max_price,
+      maxSeconds: g.params.max_seconds_left,
+    });
+    if (!op) continue;
+
+    const size_usd = Math.min(g.params.entry_size_usd, agent.cash_usd_current);
+    if (size_usd <= 0) continue;
+
+    return {
+      kind: "entry",
+      venue: "sim-poly",
+      market_id: mid,
+      side,
+      size_usd,
+      rationale: `near_resolution: ${op.detail} side=${side === "BUY" ? "YES" : "NO"}`,
+      time_stop_at: new Date(expiryMs + 60_000).toISOString(),
     };
   }
   return holdSignal();

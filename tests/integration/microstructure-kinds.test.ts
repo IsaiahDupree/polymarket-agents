@@ -77,9 +77,16 @@ describe("microstructure kinds — GENOME_KINDS registration", () => {
     expect(GENOME_KINDS).toContain("poly_repricing");
   });
 
-  it("GENOME_KINDS now has 16 total kinds (was 14 before this commit)", () => {
-    // 13 pre-markov + markov_persistence + poly_arbitrage_set + poly_repricing
-    expect(GENOME_KINDS).toHaveLength(16);
+  it("GENOME_KINDS now has 18 total kinds (was 16 before this commit)", () => {
+    // 13 pre-markov + markov_persistence + 4 microstructure kinds:
+    //   poly_arbitrage_set, poly_repricing,
+    //   poly_directional_arb_tilt, poly_near_resolution
+    expect(GENOME_KINDS).toHaveLength(18);
+  });
+
+  it("GENOME_KINDS contains poly_directional_arb_tilt + poly_near_resolution", () => {
+    expect(GENOME_KINDS).toContain("poly_directional_arb_tilt");
+    expect(GENOME_KINDS).toContain("poly_near_resolution");
   });
 
   it("multi-factory readTargetKinds() picks up both new kinds by default", () => {
@@ -113,6 +120,87 @@ describe("microstructure kinds — Zod schema + randomGenome", () => {
     const g = randomGenome(seed, "poly_repricing");
     GenomeSchema.parse(g);
     expect(g.kind).toBe("poly_repricing");
+  });
+
+  it("randomGenome('poly_directional_arb_tilt') produces a Zod-valid genome", () => {
+    const seed = (() => { let s = 3; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 0x1_0000_0000; }; })();
+    const g = randomGenome(seed, "poly_directional_arb_tilt");
+    GenomeSchema.parse(g);
+    expect(g.kind).toBe("poly_directional_arb_tilt");
+  });
+
+  it("randomGenome('poly_near_resolution') produces a Zod-valid genome", () => {
+    const seed = (() => { let s = 4; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 0x1_0000_0000; }; })();
+    const g = randomGenome(seed, "poly_near_resolution");
+    GenomeSchema.parse(g);
+    expect(g.kind).toBe("poly_near_resolution");
+  });
+});
+
+// ── 5. decide() routing for the 2 new kinds ──────────────────────────────
+
+describe("decide() — poly_directional_arb_tilt", () => {
+  const baseParams = {
+    min_edge: 0.001,
+    max_set_cost: 0.999,
+    fee_bps: 0,
+    model_window_min: 5,
+    entry_size_usd: 10,
+  };
+
+  it("HOLD when no arb base exists (YES+NO >= 1)", () => {
+    const win = makeWindow("m1", 0.525, 0.50, 0.55);
+    const ctx = makeCtx(win);
+    const agent = makeAgent({ kind: "poly_directional_arb_tilt", params: baseParams });
+    expect(decide(agent, ctx, () => 0.5).kind).toBe("hold");
+  });
+
+  it("does not throw when bid/ask absent (mid-fallback path)", () => {
+    const win = makeWindow("m1", 0.40, undefined, undefined);
+    const ctx = makeCtx(win);
+    const agent = makeAgent({ kind: "poly_directional_arb_tilt", params: baseParams });
+    expect(() => decide(agent, ctx, () => 0.5)).not.toThrow();
+  });
+
+  it("HOLD when agent has $0 cash", () => {
+    const win = makeWindow("m1", 0.44, 0.43, 0.45);
+    const ctx = makeCtx(win);
+    const agent = makeAgent({ kind: "poly_directional_arb_tilt", params: baseParams }, 0);
+    expect(decide(agent, ctx, () => 0.5).kind).toBe("hold");
+  });
+});
+
+describe("decide() — poly_near_resolution", () => {
+  const baseParams = {
+    min_price: 0.95,
+    max_price: 0.99,
+    max_seconds_left: 120,
+    entry_size_usd: 10,
+  };
+
+  it("HOLD when no binary metadata exists (no expiry to compute time-left)", () => {
+    const win = makeWindow("m1", 0.96, 0.95, 0.97);
+    const ctx = makeCtx(win);
+    const agent = makeAgent({ kind: "poly_near_resolution", params: baseParams });
+    expect(decide(agent, ctx, () => 0.5).kind).toBe("hold");
+  });
+
+  it("HOLD when agent has $0 cash", () => {
+    const win = makeWindow("m1", 0.96, 0.95, 0.97);
+    const ctx = makeCtx(win);
+    const agent = makeAgent({ kind: "poly_near_resolution", params: baseParams }, 0);
+    expect(decide(agent, ctx, () => 0.5).kind).toBe("hold");
+  });
+
+  it("HOLD when agent already has a position on the only candidate", () => {
+    const win = makeWindow("m1", 0.96, 0.95, 0.97);
+    const ctx = makeCtx(win);
+    const agent = makeAgent({ kind: "poly_near_resolution", params: baseParams });
+    agent.positions.push({
+      venue: "sim-poly", market_id: "m1", side: "BUY",
+      size_usd: 10, entry_price: 0.96, opened_at: ctx.now,
+    });
+    expect(decide(agent, ctx, () => 0.5).kind).toBe("hold");
   });
 });
 

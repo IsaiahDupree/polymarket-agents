@@ -316,6 +316,82 @@ STRATEGIES: list[dict[str, Any]] = [
         "live_eligible": "conditional",
         "note": "Live-eligible only if at least one sub is in the live-eligible kind list.",
     },
+    {
+        "kind": "poly_arbitrage_set",
+        "title": "Polymarket Arbitrage Set",
+        "venue": "Polymarket",
+        "summary": (
+            "Buy YES + NO together when their asks (plus fees) sum below $1. Risk-free locked profit "
+            "at resolution. Ported from polymarket-2dollar-bot/polybot/microstructure.py."
+        ),
+        "params": {
+            "min_edge":       ([0.001, 0.05],  "Required (1 - cost - fees)/cost edge."),
+            "max_set_cost":   ([0.85, 0.999],  "Cap on YES_ask + NO_ask."),
+            "fee_bps":        ([0, 200],       "Polymarket taker fee in bps. Default 100."),
+            "entry_size_usd": ([2, 100],       "Per-leg stake."),
+        },
+        "fires_when": "YES_ask + NO_ask + fees < $1 by min_edge.",
+        "live_eligible": True,
+        "note": "Rare opportunity; capacity is low.",
+    },
+    {
+        "kind": "poly_repricing",
+        "title": "Polymarket Repricing",
+        "venue": "Polymarket + Coinbase",
+        "summary": (
+            "Directional bet on the lag between Coinbase spot and Polymarket's reprice. Computes fair "
+            "P(YES) from spot vs strike via tanh-scaled BS rule, fires when |fair - market| >= min_edge. "
+            "Uses the same 4 event-timing gates as markov_persistence."
+        ),
+        "params": {
+            "min_edge":                    ([0.02, 0.20],    "Required |fair - market| edge."),
+            "max_yes_price_for_buy":       ([0.40, 0.85],    "Don't BUY YES above this."),
+            "min_yes_price_for_sell":      ([0.15, 0.60],    "Don't SELL YES below this."),
+            "entry_size_usd":              ([2, 100],        "Per-entry stake."),
+            "min_time_to_resolution_min":  ([0, 30],         "Skip if too close to expiry."),
+            "max_time_to_resolution_min":  ([1, 999],        "Skip if too far out."),
+            "event_phase_filter":          (["any", "opening", "mid-window", "late-window", "mid-or-late", "tradeable"], "Lifecycle phase gate."),
+            "max_signal_age_sec":          ([1, 9999],       "Max age of latest Coinbase WS tick."),
+        },
+        "fires_when": "Spot moved + Polymarket hasn't repriced + signal is fresh + phase OK.",
+        "live_eligible": True,
+        "note": "Most timing-sensitive of the new kinds.",
+    },
+    {
+        "kind": "poly_directional_arb_tilt",
+        "title": "Polymarket Directional Arb Tilt",
+        "venue": "Polymarket",
+        "summary": (
+            "Arb base (YES + NO < $1) AND a velocity-based model view → tilt toward the under-priced "
+            "side. Asymmetric exposure but the arb floor bounds downside."
+        ),
+        "params": {
+            "min_edge":         ([0.001, 0.05], "Required arb-set edge as a floor."),
+            "max_set_cost":     ([0.85, 0.999], "Cap on YES + NO ask sum."),
+            "fee_bps":          ([0, 200],      "Polymarket taker fee."),
+            "model_window_min": ([1, 30],       "Window for velocity-based directional model."),
+            "entry_size_usd":   ([2, 100],      "Per-leg stake."),
+        },
+        "fires_when": "Arb base AND velocity gives a directional view.",
+        "live_eligible": True,
+    },
+    {
+        "kind": "poly_near_resolution",
+        "title": "Polymarket Near-Resolution Scrape",
+        "venue": "Polymarket",
+        "summary": (
+            "Buy a near-certain side trading at 0.95-0.99 in the final minutes. High win rate / small "
+            "reward (the '$2 → ~$0.30' profile). Time-to-resolution gated to bound tail risk."
+        ),
+        "params": {
+            "min_price":         ([0.85, 0.99],   "Min YES price to qualify."),
+            "max_price":         ([0.95, 0.999],  "Max YES price (above = thin upside)."),
+            "max_seconds_left":  ([15, 600],      "Max seconds-to-resolution for the entry."),
+            "entry_size_usd":    ([2, 50],        "Per-entry stake."),
+        },
+        "fires_when": "YES price in [min, max] AND seconds-to-expiry <= max_seconds_left.",
+        "live_eligible": True,
+    },
 ]
 
 

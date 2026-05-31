@@ -188,6 +188,47 @@ const PolyShortBinaryDirectional = z.object({
  *   - docs/research/articles/de1lymoon-markov-chains-framework.md
  */
 /**
+ * Polymarket directional arb tilt — arb base present AND a velocity-based
+ * model view → tilt toward the under-priced side instead of locking a
+ * pure-arbitrage set. Asymmetric exposure but the arb floor still bounds
+ * downside. Ported from polymarket-2dollar-bot polybot/microstructure.py
+ * `directional_arb_tilt()`.
+ *
+ * Velocity model: model_p_yes = clamp(0.5 + velocity * 5, 0, 1)
+ * where velocity = (price_now − price_window_ago) / 0.20  (binary scale).
+ * If model_p_yes > YES_ask → tilt YES, else tilt NO.
+ */
+const PolyDirectionalArbTilt = z.object({
+  /** Minimum arb-set edge required as a floor. */
+  min_edge: num(0.001, 0.05),
+  /** Cap on the set cost (YES + NO asks). Above this, arb is too thin. */
+  max_set_cost: num(0.85, 0.999),
+  /** Polymarket taker fee in bps. Default 100. */
+  fee_bps: num(0, 200),
+  /** Velocity window for the directional model, in minutes. */
+  model_window_min: num(1, 30),
+  /** Per-leg notional. */
+  entry_size_usd: num(2, 100),
+}).strict();
+
+/**
+ * Polymarket near-resolution scrape — buy a near-certain side that's still
+ * trading below $1 in the final minutes. The "$2 → ~$0.30" payoff profile.
+ * Ported from polymarket-2dollar-bot polybot/microstructure.py
+ * `near_resolution_edge()`. Time-to-resolution gate uses binary metadata.
+ */
+const PolyNearResolution = z.object({
+  /** Minimum YES price (must be near-certain to fire). Article default 0.95. */
+  min_price: num(0.85, 0.99),
+  /** Maximum YES price (above this, the upside reward is too thin). */
+  max_price: num(0.95, 0.999),
+  /** Maximum seconds to resolution. Article default 120. */
+  max_seconds_left: num(15, 600),
+  /** Per-entry stake in USD. */
+  entry_size_usd: num(2, 50),
+}).strict();
+
+/**
  * Polymarket arbitrage set — buy YES + NO together when their asks sum
  * below $1. Risk-free locked profit; only fires when the set-cost gap
  * exceeds min_edge after fees. Ported from polymarket-2dollar-bot
@@ -320,6 +361,8 @@ export const SubGenomeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("markov_persistence"),   params: MarkovPersistence }),
   z.object({ kind: z.literal("poly_arbitrage_set"),   params: PolyArbitrageSet }),
   z.object({ kind: z.literal("poly_repricing"),       params: PolyRepricing }),
+  z.object({ kind: z.literal("poly_directional_arb_tilt"), params: PolyDirectionalArbTilt }),
+  z.object({ kind: z.literal("poly_near_resolution"), params: PolyNearResolution }),
 ]);
 
 export type SubGenome = z.infer<typeof SubGenomeSchema>;
@@ -355,6 +398,8 @@ export const GenomeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("markov_persistence"),   params: MarkovPersistence }),
   z.object({ kind: z.literal("poly_arbitrage_set"),   params: PolyArbitrageSet }),
   z.object({ kind: z.literal("poly_repricing"),       params: PolyRepricing }),
+  z.object({ kind: z.literal("poly_directional_arb_tilt"), params: PolyDirectionalArbTilt }),
+  z.object({ kind: z.literal("poly_near_resolution"), params: PolyNearResolution }),
   z.object({ kind: z.literal("multi_strategy"),       params: MultiStrategy }),
 ]);
 
@@ -377,6 +422,8 @@ export const GENOME_KINDS: GenomeKind[] = [
   "markov_persistence",
   "poly_arbitrage_set",
   "poly_repricing",
+  "poly_directional_arb_tilt",
+  "poly_near_resolution",
   "multi_strategy",
 ];
 
@@ -508,6 +555,19 @@ const PARAM_BOUNDS: Record<GenomeKind, Record<string, [number, number] | string[
     max_time_to_resolution_min: [1, 999],
     event_phase_filter: ["any", "opening", "mid-window", "late-window", "mid-or-late", "tradeable"],
     max_signal_age_sec: [1, 9999],
+  },
+  poly_directional_arb_tilt: {
+    min_edge: [0.001, 0.05],
+    max_set_cost: [0.85, 0.999],
+    fee_bps: [0, 200],
+    model_window_min: [1, 30],
+    entry_size_usd: [2, 100],
+  },
+  poly_near_resolution: {
+    min_price: [0.85, 0.99],
+    max_price: [0.95, 0.999],
+    max_seconds_left: [15, 600],
+    entry_size_usd: [2, 50],
   },
 };
 
