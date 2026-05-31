@@ -26,11 +26,29 @@ beforeEach(() => {
   memDb?.close(); memDb = null;
   process.env.ALLOW_AUTO_PROMOTE = "1";
   process.env.ARENA_LIVE_CAPITAL_TOTAL_USD = "30";
+  // Lock the risk budget to $5 × 3 × 2 = $30 total so capital-allocation
+  // assertions (per_capsule_usd ≈ 10) keep their original meaning. The
+  // production default lowered to $2 stake on 2026-05-30 (staged-stake
+  // phase 1) which would drop the total to $12; these tests pre-date that
+  // change and verify allocation math, not the stake default itself.
+  process.env.RISK_STAKE_USD = "5";
+  // Lock the fitness formula to the legacy pnl_dd mode. The new default
+  // (winrate, 2026-05-30) sentinels any agent below ARENA_MIN_TRADES_FOR_RANKING=30
+  // closed trades, but these tests deliberately seed agents with 3-15 trades
+  // to exercise selection mechanics. The winrate fitness is verified in
+  // tests/unit/arena-score.test.ts.
+  process.env.ARENA_FITNESS_MODE = "pnl_dd";
   // Disable the operator-set lifetime PnL gate (default $96) for these
   // tests — they seed agents with small realized PnL by design to exercise
   // selection logic, not the gate itself. The gate is exercised separately
   // in arena-auto-promote-pnl-gate.test.ts if needed.
   process.env.MIN_LIVE_CAPSULE_PNL_USD = "0";
+  // Disable the 90 %-win-rate gate (default 0.90) for the same reason: the
+  // seedAgent helper deliberately uses small trade counts so win_rate is
+  // mechanically (trades-1)/trades, which lands well below 0.90 for the
+  // 3-15 trade fixtures used by these tests. Win-rate gate behavior is
+  // exercised in the dedicated `winrate gate` describe block below.
+  process.env.ARENA_AUTO_PROMOTE_MIN_WIN_RATE = "0";
 });
 
 async function seedAgent(opts: {
@@ -285,5 +303,65 @@ describe("runAutoPromote — demote on fallout", () => {
     // Plus an auto-live capsule was created
     const autos = db().prepare(`SELECT COUNT(*) AS c FROM capsules WHERE name LIKE 'auto-live-%'`).get() as { c: number };
     expect(autos.c).toBe(1);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// Win-rate gate: live promotion requires ≥ ARENA_AUTO_PROMOTE_MIN_WIN_RATE
+// (default 0.90). The other describe blocks above neutralise this gate so
+// they can exercise selection mechanics with small fixtures; here we
+// enable it explicitly and prove rejection vs admission.
+// ---------------------------------------------------------------------------
+
+describe("runAutoPromote — winrate gate", () => {
+  async function seedAgentWithWinRate(name: string, trades: number, wins: number): Promise<number> {
+    const { db } = await import("@/lib/db/client");
+    db().prepare(`INSERT OR IGNORE INTO paper_generations (gen_number) VALUES (1)`).run();
+    const genome = JSON.stringify({
+      kind: "poly_short_binary_directional",
+      params: {
+        assets: "BTC", vel_window_min: 3, vel_entry_pct: 0.001,
+        pre_cutoff_min: 3, max_window_min: 6,
+        max_yes_price_for_buy: 0.7, min_yes_price_for_sell: 0.3,
+        entry_size_usd: 2, max_positions_per_asset: 1,
+      },
+    });
+    const r = db().prepare(
+      `INSERT INTO paper_agents (
+         name, generation, genome_json, introduced_by,
+         cash_usd_start, cash_usd_current, peak_equity_usd,
+         realized_pnl_usd, trades_count, entries_count, wins_count, is_elite
+       ) VALUES (?, 1, ?, 'test', 100, 110, 110, 10, ?, ?, ?, 1)`,
+    ).run(name, genome, trades, trades, wins);
+    return Number(r.lastInsertRowid);
+  }
+
+  it("rejects agents below the 0.90 default win-rate gate", async () => {
+    // Restore the gate to the production default for this block.
+    delete process.env.ARENA_AUTO_PROMOTE_MIN_WIN_RATE;
+    // 60 % winner — should be filtered out by the win-rate gate.
+    await seedAgentWithWinRate("coin-flipper", 100, 60);
+    const { runAutoPromote } = await import("@/lib/arena/auto-promote");
+    const r = runAutoPromote();
+    expect(r.promoted).toHaveLength(0);
+  });
+
+  it("admits agents at or above the 0.90 default win-rate gate", async () => {
+    delete process.env.ARENA_AUTO_PROMOTE_MIN_WIN_RATE;
+    // 92 % winner clears the gate.
+    await seedAgentWithWinRate("sniper", 100, 92);
+    const { runAutoPromote } = await import("@/lib/arena/auto-promote");
+    const r = runAutoPromote();
+    expect(r.promoted.length).toBeGreaterThan(0);
+  });
+
+  it("operator can lower the gate via ARENA_AUTO_PROMOTE_MIN_WIN_RATE env", async () => {
+    // 70 % winner — would fail the default 0.90 gate.
+    process.env.ARENA_AUTO_PROMOTE_MIN_WIN_RATE = "0.65";
+    await seedAgentWithWinRate("mid-perf", 100, 70);
+    const { runAutoPromote } = await import("@/lib/arena/auto-promote");
+    const r = runAutoPromote();
+    expect(r.promoted.length).toBeGreaterThan(0);
   });
 });

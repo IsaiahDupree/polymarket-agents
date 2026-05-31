@@ -142,6 +142,86 @@ function runLightMigrations(handle: Database.Database): void {
   handle.exec(
     `CREATE INDEX IF NOT EXISTS idx_capsules_asset_class ON capsules(asset_class) WHERE asset_class IS NOT NULL;`,
   );
+
+  // 2026-05-30: Twitter-article triage workbench (incoming_articles +
+  // article_gap_reports + article_todos). Workflow:
+  //   1. Operator pastes a twitter thread → row in incoming_articles.
+  //   2. /articles/[id] page renders body. Operator clicks "Generate gap
+  //      report" → LLM call writes article_gap_reports row.
+  //   3. Gap report's suggested_next_steps seed article_todos rows that the
+  //      operator ticks off as work lands. Only one article is `is_current_focus`
+  //      at a time (enforced in queries, not via UNIQUE — we want toggling to
+  //      be a single UPDATE, not a transaction).
+  handle.exec(`
+    CREATE TABLE IF NOT EXISTS incoming_articles (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      source            TEXT NOT NULL,
+      url               TEXT,
+      title             TEXT NOT NULL,
+      body_md           TEXT NOT NULL,
+      frontmatter_json  TEXT NOT NULL DEFAULT '{}',
+      status            TEXT NOT NULL DEFAULT 'new'
+                          CHECK(status IN ('new','triaging','developing','shipped','parked')),
+      is_current_focus  INTEGER NOT NULL DEFAULT 0,
+      created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_articles_status ON incoming_articles(status);
+    CREATE INDEX IF NOT EXISTS idx_articles_focus ON incoming_articles(is_current_focus) WHERE is_current_focus = 1;
+
+    CREATE TABLE IF NOT EXISTS article_gap_reports (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      article_id    INTEGER NOT NULL REFERENCES incoming_articles(id) ON DELETE CASCADE,
+      body_md       TEXT NOT NULL,
+      report_json   TEXT NOT NULL DEFAULT '{}',
+      model         TEXT NOT NULL,
+      source        TEXT NOT NULL DEFAULT 'llm'
+                      CHECK(source IN ('llm','human','seed')),
+      generated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_gap_reports_article ON article_gap_reports(article_id, generated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS article_todos (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      article_id    INTEGER NOT NULL REFERENCES incoming_articles(id) ON DELETE CASCADE,
+      label         TEXT NOT NULL,
+      related_path  TEXT,
+      status        TEXT NOT NULL DEFAULT 'open'
+                      CHECK(status IN ('open','in_progress','done','wont_do')),
+      created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      completed_at  TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_todos_article ON article_todos(article_id, status);
+
+    -- 2026-05-30: cross-link from strategies (or arbitrary code modules) back
+    -- to the article(s) they were inspired by. Composite PK lets one strategy
+    -- cite multiple articles (e.g., a fair-value Markov scanner blends ideas
+    -- from Ricker + Alex). The role column distinguishes primary inspiration
+    -- from supporting references. The module_path column is a fallback for
+    -- tracking non-strategy artifacts (e.g., a quant module like
+    -- becker-calibration.ts that's used across strategies — strategy_id can
+    -- be NULL in that case).
+    CREATE TABLE IF NOT EXISTS strategy_article_sources (
+      strategy_id   INTEGER REFERENCES strategies(id) ON DELETE CASCADE,
+      module_path   TEXT,
+      article_id    INTEGER NOT NULL REFERENCES incoming_articles(id) ON DELETE CASCADE,
+      role          TEXT NOT NULL DEFAULT 'primary'
+                      CHECK(role IN ('primary','supporting','calibration','execution')),
+      notes         TEXT,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      CHECK (strategy_id IS NOT NULL OR module_path IS NOT NULL)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_sas_unique
+      ON strategy_article_sources(
+        COALESCE(strategy_id, -1),
+        COALESCE(module_path, ''),
+        article_id,
+        role
+      );
+    CREATE INDEX IF NOT EXISTS idx_sas_article ON strategy_article_sources(article_id);
+    CREATE INDEX IF NOT EXISTS idx_sas_strategy ON strategy_article_sources(strategy_id) WHERE strategy_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_sas_module ON strategy_article_sources(module_path) WHERE module_path IS NOT NULL;
+  `);
 }
 
 export function closeDb() {

@@ -9,7 +9,7 @@
  * This module reformulates the budget so every USD number is *derived* from
  * a single anchor (`STAKE_USD`) plus dimensionless integer multipliers:
  *
- *   STAKE_USD              = $5         (the one USD anchor — the per-trade size)
+ *   STAKE_USD              = $2         (the one USD anchor — the per-trade size; staged-stake phase 1)
  *   N_AGENTS               = 3          (live capsule count)
  *   DAILY_STAKES_AT_RISK   = 1          (losing stakes before a capsule pauses for the day)
  *   LIFETIME_STAKES_AT_RISK = 2         (losing stakes before a capsule permanently pauses)
@@ -81,13 +81,29 @@ export type RiskBudget = {
   };
 };
 
-/** Default multipliers — overridable via env. */
+/**
+ * Default multipliers — overridable via env.
+ *
+ * `stakeUsd` lowered 2026-05-30 from $5 → $2 per the staged-stake PRD
+ * (docs/prds/staged-stake-consistent-winner-2026-05-30.md). The starter
+ * phase trades at $2 stakes so agents accumulate trade samples before the
+ * stake-promoter worker bumps them to the next phase ($5/$10/$20).
+ *
+ * `fillRateHeadroom` raised 2026-05-30 from 10 → 200 to support the
+ * "hundreds of trades per day" BTC Up/Down loop target. This only widens
+ * the *attempts* allowed per capsule; real-money loss is still bounded by
+ * `stake × dailyStakesAtRisk = $2/day` regardless of how many cycles run.
+ * That bound is why bumping the headroom is safe: a capsule can fire 200
+ * orders but loses at most $2 before the daily-loss cap halts it.
+ *
+ * Operator can still override with RISK_STAKE_USD / RISK_FILL_RATE_HEADROOM.
+ */
 const DEFAULTS: Required<Pick<RiskBudgetInputs, "stakeUsd" | "nAgents" | "dailyStakesAtRisk" | "lifetimeStakesAtRisk" | "fillRateHeadroom">> = {
-  stakeUsd: 5,
+  stakeUsd: 2,
   nAgents: 3,
   dailyStakesAtRisk: 1,
   lifetimeStakesAtRisk: 2,
-  fillRateHeadroom: 10,
+  fillRateHeadroom: 200,
 };
 
 /** Read inputs from env with defaults, then derive. Pure / side-effect-free. */

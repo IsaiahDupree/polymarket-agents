@@ -15,6 +15,11 @@
  * without redeploying:
  *   - GRADUATION_MIN_PNL_USD      (default 10)  — lowered 2026-05-30 for staged-stake
  *   - GRADUATION_MIN_TRADES        (default 15)  — see docs/prds/staged-stake-consistent-winner-2026-05-30.md
+ *   - GRADUATION_MIN_WIN_RATE      (default 0.60) — added 2026-05-30 so a profitable but
+ *                                   coin-flip agent (55 % win, lucky tail) can't graduate.
+ *                                   The win-rate-aware fitness in score.ts already biases
+ *                                   *ranking* toward winners; this gate locks it for the
+ *                                   sim→paper boundary too.
  *   - GRADUATION_AUTO_STAGE_CAPITAL (default 50)
  *   - GRADUATION_AUTO_STAGE_MAX_DAILY_LOSS (default 25)
  *   - GRADUATION_AUTO_STAGE_MAX_TOTAL_DRAWDOWN (default 10)
@@ -146,7 +151,7 @@ export type GraduationPassResult = {
   eligible: number;
   newly_emitted: number;
   candidates: GraduationCandidate[];
-  thresholds: { min_pnl_usd: number; min_trades: number };
+  thresholds: { min_pnl_usd: number; min_trades: number; min_win_rate: number };
   ran_at: string;
 };
 
@@ -161,6 +166,11 @@ export type GraduationPassResult = {
 export function runGraduationPass(): GraduationPassResult {
   const minPnlUsd = envNum("GRADUATION_MIN_PNL_USD", 10);
   const minTrades = envNum("GRADUATION_MIN_TRADES", 15);
+  // 0.90 matches the user's stated target ("90%+ win rate") from the BTC
+  // Up/Down loop spec. An agent that hasn't proven 90% on sim won't get a
+  // paper slot. Operator can lower via GRADUATION_MIN_WIN_RATE if early
+  // strategies need a softer gate while iterating.
+  const minWinRate = envNum("GRADUATION_MIN_WIN_RATE", 0.90);
   const handle = db();
 
   const rows = handle
@@ -196,12 +206,15 @@ export function runGraduationPass(): GraduationPassResult {
   for (const r of rows) {
     const activatedMs = r.activated_at ? Date.parse(r.activated_at) : 0;
     const hoursSince = activatedMs > 0 ? (now - activatedMs) / 3_600_000 : 0;
-    const eligible = r.realized_pnl_usd >= minPnlUsd && r.trades_count >= minTrades;
+    const winRate = r.trades_count > 0 ? r.wins_count / r.trades_count : 0;
+    const failures: string[] = [];
+    if (r.realized_pnl_usd < minPnlUsd) failures.push(`pnl=$${r.realized_pnl_usd.toFixed(2)} < $${minPnlUsd}`);
+    if (r.trades_count < minTrades) failures.push(`trades=${r.trades_count} < ${minTrades}`);
+    if (winRate < minWinRate) failures.push(`win_rate=${(winRate * 100).toFixed(1)}% < ${(minWinRate * 100).toFixed(1)}%`);
+    const eligible = failures.length === 0;
     const reason = eligible
-      ? `cleared: pnl=$${r.realized_pnl_usd.toFixed(2)} ≥ $${minPnlUsd} AND trades=${r.trades_count} ≥ ${minTrades}`
-      : r.realized_pnl_usd < minPnlUsd
-      ? `pnl=$${r.realized_pnl_usd.toFixed(2)} < $${minPnlUsd}`
-      : `trades=${r.trades_count} < ${minTrades}`;
+      ? `cleared: pnl=$${r.realized_pnl_usd.toFixed(2)} ≥ $${minPnlUsd} AND trades=${r.trades_count} ≥ ${minTrades} AND win_rate=${(winRate * 100).toFixed(1)}% ≥ ${(minWinRate * 100).toFixed(1)}%`
+      : failures.join("; ");
 
     candidates.push({
       capsule_id: r.capsule_id,
@@ -237,7 +250,7 @@ export function runGraduationPass(): GraduationPassResult {
 
     insertEvolutionEvent({
       event_type: "graduation-eligible",
-      summary: `agent #${r.paper_agent_id} ${r.agent_name.slice(0, 30)} cleared graduation gate (pnl=$${r.realized_pnl_usd.toFixed(2)}, trades=${r.trades_count})`,
+      summary: `agent #${r.paper_agent_id} ${r.agent_name.slice(0, 30)} cleared graduation gate (pnl=$${r.realized_pnl_usd.toFixed(2)}, trades=${r.trades_count}, win_rate=${(winRate * 100).toFixed(1)}%)`,
       payload_json: JSON.stringify({
         capsule_id: r.capsule_id,
         paper_agent_id: r.paper_agent_id,
@@ -246,9 +259,9 @@ export function runGraduationPass(): GraduationPassResult {
         realized_pnl_usd: r.realized_pnl_usd,
         trades_count: r.trades_count,
         wins_count: r.wins_count,
-        win_rate: r.trades_count > 0 ? r.wins_count / r.trades_count : 0,
+        win_rate: winRate,
         hours_since_activated: hoursSince,
-        thresholds: { min_pnl_usd: minPnlUsd, min_trades: minTrades },
+        thresholds: { min_pnl_usd: minPnlUsd, min_trades: minTrades, min_win_rate: minWinRate },
       }),
     });
     newlyEmitted += 1;
@@ -263,7 +276,7 @@ export function runGraduationPass(): GraduationPassResult {
       scanned: rows.length,
       eligible: eligibleCount,
       newly_emitted: newlyEmitted,
-      thresholds: { min_pnl_usd: minPnlUsd, min_trades: minTrades },
+      thresholds: { min_pnl_usd: minPnlUsd, min_trades: minTrades, min_win_rate: minWinRate },
     }),
   });
 
@@ -272,7 +285,7 @@ export function runGraduationPass(): GraduationPassResult {
     eligible: eligibleCount,
     newly_emitted: newlyEmitted,
     candidates,
-    thresholds: { min_pnl_usd: minPnlUsd, min_trades: minTrades },
+    thresholds: { min_pnl_usd: minPnlUsd, min_trades: minTrades, min_win_rate: minWinRate },
     ran_at: new Date().toISOString(),
   };
 }

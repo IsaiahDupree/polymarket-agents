@@ -74,12 +74,15 @@ describe("deriveBudget — equations", () => {
 
 describe("readRiskBudgetFromEnv — env parsing", () => {
   it("uses defaults when no env vars set", () => {
+    // Defaults updated 2026-05-30:
+    //   - stake: $5 → $2 (staged-stake phase 1)
+    //   - fillRateHeadroom: 10 → 200 (BTC Up/Down "hundreds of trades/day" target)
     const b = readRiskBudgetFromEnv({});
-    expect(b.inputs.stakeUsd).toBe(5);
+    expect(b.inputs.stakeUsd).toBe(2);
     expect(b.inputs.nAgents).toBe(3);
     expect(b.inputs.dailyStakesAtRisk).toBe(1);
     expect(b.inputs.lifetimeStakesAtRisk).toBe(2);
-    expect(b.inputs.fillRateHeadroom).toBe(10);
+    expect(b.inputs.fillRateHeadroom).toBe(200);
   });
 
   it("overrides from RISK_* env names", () => {
@@ -109,12 +112,12 @@ describe("readRiskBudgetFromEnv — env parsing", () => {
 
   it("ignores malformed env values and falls back to default", () => {
     const b = readRiskBudgetFromEnv({ RISK_STAKE_USD: "not-a-number" });
-    expect(b.inputs.stakeUsd).toBe(5);
+    expect(b.inputs.stakeUsd).toBe(2);  // default (2026-05-30 staged-stake phase 1)
   });
 
   it("rejects negative env values (only positive makes sense)", () => {
     const b = readRiskBudgetFromEnv({ RISK_STAKE_USD: "-10" });
-    expect(b.inputs.stakeUsd).toBe(5);  // falls back to default
+    expect(b.inputs.stakeUsd).toBe(2);  // falls back to default
   });
 });
 

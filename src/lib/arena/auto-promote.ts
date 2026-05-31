@@ -84,6 +84,11 @@ export function runAutoPromote(opts: { topN?: number; minTrades?: number } = {})
 
   const topN = opts.topN ?? budget.inputs.nAgents;
   const minTrades = opts.minTrades ?? Number(process.env.ARENA_AUTO_PROMOTE_MIN_TRADES ?? DEFAULT_MIN_TRADES);
+  // Win-rate gate on the LIVE boundary. Default 0.90 matches the BTC
+  // Up/Down loop target — real money only flows to agents that have
+  // demonstrated 90 %+ on paper. Set ARENA_AUTO_PROMOTE_MIN_WIN_RATE=0
+  // to disable the gate entirely (not recommended).
+  const minWinRate = Number(process.env.ARENA_AUTO_PROMOTE_MIN_WIN_RATE ?? "0.90");
 
   // 1. Source candidate agents.
   //
@@ -169,6 +174,12 @@ export function runAutoPromote(opts: { topN?: number; minTrades?: number } = {})
     .filter(({ agent }) => {
       if (agent.trades_count < minTrades) return false;
       if (agent.realized_pnl_usd <= 0) return false;
+      // Win-rate gate: same 60 % default as the sim→paper graduation
+      // boundary. Skip when minWinRate is 0 (operator disabled the gate).
+      if (minWinRate > 0) {
+        const winRate = agent.trades_count > 0 ? agent.wins_count / agent.trades_count : 0;
+        if (winRate < minWinRate) return false;
+      }
       // Inspect the agent's genome kind. multi_strategy is eligible iff it
       // contains at least one live-eligible sub-kind.
       let kind: string | null = null;
