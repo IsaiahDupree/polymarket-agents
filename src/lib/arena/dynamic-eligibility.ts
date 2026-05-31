@@ -71,6 +71,11 @@ export const DEFAULT_SAFETY_CEILING: ReadonlySet<string> = new Set([
   // execution path as poly_short_binary_directional, so live-eligibility
   // reduces to "the executor can route it correctly" — which it can.
   "markov_persistence",
+  // Microstructure kinds — registered 2026-05-31 from 2dollar-bot/mac port.
+  // Both use the Polymarket CLOB executor; arb_set buys YES+NO pair,
+  // repricing fires directional based on spot lag.
+  "poly_arbitrage_set",
+  "poly_repricing",
 ]);
 
 export type EligibilityDecision = {

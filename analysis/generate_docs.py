@@ -50,6 +50,7 @@ DB = REPO / "data" / "polymarket.db"
 STATE = REPO / "data" / "factory-state.json"
 OUT_VARS = ANALYSIS / "agent-variables-and-strategies.docx"
 OUT_ARCH = ANALYSIS / "architecture-and-timing.docx"
+OUT_LATENCY = ANALYSIS / "latency-and-event-map.docx"
 
 ANALYSIS.mkdir(exist_ok=True)
 CHARTS.mkdir(exist_ok=True)
@@ -999,6 +1000,262 @@ def build_doc_architecture_and_timing(stats: dict[str, Any], state: dict[str, An
 # ---------------------------------------------------------------------------
 # Main
 
+def build_doc_latency_and_event_map() -> None:
+    """Doc 3: synthesizes the polymarket-2dollar-bot/mac framework + HFT
+    docs/strategies/ into a PolymarketAutomation-specific latency + event
+    timing playbook. Cross-references the source files in both repos.
+    """
+    chart_pipeline_diagram(CHARTS / "pipeline.png")
+    chart_timing_lanes(CHARTS / "timing-lanes.png")
+
+    doc = Document()
+    style = doc.styles["Normal"]
+    style.font.name = "Calibri"
+    style.font.size = Pt(11)
+
+    add_heading(doc, "PolymarketAutomation — Latency + Event Map", level=0)
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run(
+        f"Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}  ·  "
+        "Synthesized from polymarket-2dollar-bot/mac + HFT/docs/strategies"
+    )
+    run.italic = True
+    doc.add_page_break()
+
+    add_heading(doc, "Executive summary", level=1)
+    add_paragraph(doc,
+        "This document is the operator's reference for thinking about latency, "
+        "event lifecycle, and signal freshness in the PolymarketAutomation arena. "
+        "It synthesizes two existing source frameworks — the polymarket-2dollar-bot "
+        "'mac' branch (live WS pricefeed + microstructure scanners + architecture "
+        "report) and the HFT repo's strategy docs (latency-arbitrage, event-driven, "
+        "microstructure-signals) — into a playbook applicable to the arena agents "
+        "we breed in this repo."
+    )
+    add_paragraph(doc,
+        "Three new genome kinds and one TickContext-adjacent timing module land "
+        "as part of this work: markov_persistence (timing-aware), "
+        "poly_arbitrage_set (risk-free YES+NO buy), and poly_repricing "
+        "(directional spot-vs-market gap)."
+    )
+
+    # ── Latency tiers
+    add_heading(doc, "1. Latency tiers (T0–T4)", level=1)
+    add_paragraph(doc,
+        "From HFT/docs/strategies/latency-arbitrage.md §2.1 — what 'time' "
+        "means in a leader-lagger race. Every variant has the same shape: "
+        "read the leader → predict where the lagger will be → trade against "
+        "the lagger's stale quote → close when the lagger updates."
+    )
+    add_table(doc,
+        ["Tier", "Budget", "Reachable from", "Examples"],
+        [
+            ["T0", "µs (wire)",        "microwave + colo, FPGA",     "ES → SPY (Eurex 3.2ns = €75M/yr)"],
+            ["T1", "µs (software)",    "kernel-bypass NIC, single-thread C++", "CME futures → cash, BiNance lagger"],
+            ["T2", "10–100 ms",        "same-region cloud, no colo", "Binance USDM → Coinbase spot"],
+            ["T3", "100–1000 ms",      "different region, REST polling",     "** PolymarketAutomation's tier **"],
+            ["T4", "1–15 s (block)",   "blockchain block latency",  "DEX-CEX stale-oracle arb"],
+        ]
+    )
+    add_paragraph(doc,
+        "PolymarketAutomation operates in T3. Our snapshot worker polls; our "
+        "realtime worker uses WS (sub-second when healthy) for crypto ticks "
+        "but still goes through HTTPS for order placement. We cannot win a "
+        "race against firms in T0–T1, but the leader-lagger gap on Polymarket "
+        "is 2.7–12 seconds — well above our floor.",
+    )
+
+    # ── Binary lifecycle
+    add_heading(doc, "2. Polymarket binary lifecycle", level=1)
+    add_paragraph(doc,
+        "Reference: HFT event-driven.md §2.6 + polymarket-2dollar-bot "
+        "analysis/architecture_report.py. Each 5-min and 15-min binary has a "
+        "deterministic lifecycle from window-open to settlement:"
+    )
+    add_table(doc,
+        ["Phase", "Range", "Strategic signal"],
+        [
+            ["pre-window",  "now < expiry − duration",        "market exists but window hasn't started (rare 5-min)"],
+            ["opening",     "0 % – 25 % of window elapsed",   "signal forming, Markov persistence is unstable"],
+            ["mid-window",  "25 % – 75 %",                    "signal established, edge widest, Markov mature"],
+            ["late-window", "75 % – 100 % minus cutoff",      "sample-size dominated, exit-liq premium grows"],
+            ["post-cutoff", "minToResolution ≤ cutoff (~3m)", "Polymarket order-book lockout — no new orders"],
+            ["resolved",    "expiry passed",                  "settled at oracle close"],
+        ]
+    )
+    add_paragraph(doc,
+        "Implementation: src/lib/arena/event-timing.ts — `eventPhase({expiryIso, "
+        "durationMin, now, cutoffMin})`. Pure function. Phase split at 0.25/0.75 "
+        "matches the polymarket-2dollar-bot architecture report."
+    )
+
+    # ── Microstructure signals
+    add_heading(doc, "3. Microstructure signals", level=1)
+    add_paragraph(doc,
+        "Ported from polymarket-2dollar-bot/polybot/microstructure.py and "
+        "HFT/docs/strategies/microstructure-signals.md §2.3 (OFI):"
+    )
+    add_table(doc,
+        ["Signal", "Returns", "PolymarketAutomation home", "Use"],
+        [
+            ["arbitrageEdge",
+             "Opportunity | null",
+             "src/lib/quant/microstructure.ts",
+             "BOTH-side buy when YES+NO+fees < $1; locked profit"],
+            ["directionalArbTilt",
+             "Opportunity | null",
+             "src/lib/quant/microstructure.ts",
+             "Arb base + model view → tilt to under-priced side"],
+            ["nearResolutionEdge",
+             "Opportunity | null",
+             "src/lib/quant/microstructure.ts",
+             "Buy late-window almost-certain side at 0.95–0.99"],
+            ["orderbookImbalance",
+             "number ∈ [-1, 1]",
+             "src/lib/quant/microstructure.ts",
+             "Top-N depth skew — bid-heavy / ask-heavy lag signal"],
+            ["repricingEdge",
+             "Opportunity | null",
+             "src/lib/quant/microstructure.ts",
+             "Fair P(YES) vs market gap — directional bet on lag"],
+        ]
+    )
+
+    # ── Genome enhancements
+    add_heading(doc, "4. Agent enhancements landed", level=1)
+    add_paragraph(doc,
+        "Three genome kinds now use the latency/event framework:"
+    )
+    add_table(doc,
+        ["Genome kind", "Strategy", "Timing-aware?", "Source port"],
+        [
+            ["markov_persistence",
+             "p(j*,j*) ≥ 0.87 + Markov MC + Becker calibration",
+             "Yes — 4 timing-gate params (min/max time-to-resolution, phase filter, signal freshness)",
+             "@0xRicker / @de1lymoon articles"],
+            ["poly_arbitrage_set",
+             "Buy YES + NO when ask sum + fees < $1",
+             "No — fires on book inefficiency, not timing",
+             "polymarket-2dollar-bot arbitrage_edge()"],
+            ["poly_repricing",
+             "Spot-vs-market gap via Coinbase tick → fair P(YES)",
+             "Yes — same 4 timing-gate params as markov",
+             "polymarket-2dollar-bot repricing_edge()"],
+        ]
+    )
+
+    # ── New genome params
+    add_heading(doc, "5. New genome params (timing gates)", level=1)
+    add_paragraph(doc,
+        "These appear on markov_persistence and poly_repricing. randomGenome "
+        "samples them by default; each is configurable per agent via the "
+        "ARENA tuning interfaces."
+    )
+    add_table(doc,
+        ["Param", "Range", "Default behavior (disabled)", "What it gates"],
+        [
+            ["min_time_to_resolution_min", "[0, 30]", "0", "Skip if minToResolution < this (avoid cutoff zone)"],
+            ["max_time_to_resolution_min", "[1, 999]", "999", "Skip if minToResolution > this (skip event markets)"],
+            ["event_phase_filter",         "enum",    "any", "Restrict to specific lifecycle phase"],
+            ["max_signal_age_sec",         "[1, 9999]", "9999", "Skip if Coinbase WS tick older than this"],
+        ]
+    )
+
+    # ── Pipeline overview
+    add_heading(doc, "6. Data pipeline (where freshness lives)", level=1)
+    add_image(doc, CHARTS / "pipeline.png",
+              caption="Coinbase + Polymarket feeds → snapshot/realtime stores → arena → capsules → live.")
+    add_paragraph(doc,
+        "Critical freshness checkpoints, in order:"
+    )
+    add_paragraph(doc,
+        "• worker:realtime — sub-second Polymarket + Coinbase WS, 1-sec debounce, writes realtime_ticks."
+        " Equivalent to polymarket-2dollar-bot's pricefeed.py + scripts/pricefeed.py.")
+    add_paragraph(doc,
+        "• worker:snapshot — periodic deeper poll (orderbook, history). Equivalent to scripts/scan*.py in 2dollar-bot.")
+    add_paragraph(doc,
+        "• decideMarkovPersistence + decidePolyRepricing — read latestRealtimeTicks() at decision time. "
+        "If the most recent Coinbase tick is older than max_signal_age_sec, the strategy holds. "
+        "This is the same pattern as 2dollar-bot's `latest()` check in pricefeed.py.")
+    add_paragraph(doc,
+        "• Execution: when the agent fires, the executor reads a SECOND fresh tick to ask-re-check. "
+        "Same pattern as 2dollar-bot's commit 581980c \"freshest data at decision + execution\".")
+
+    add_image(doc, CHARTS / "timing-lanes.png",
+              caption="Per-subsystem cadence (log scale) — supervisor every 5 min, stake-promoter every 4 hours.")
+
+    # ── What to watch
+    add_heading(doc, "7. Strategic positioning per kind", level=1)
+    add_table(doc,
+        ["Kind", "Best phase", "Tick-freshness sensitivity", "Capacity"],
+        [
+            ["markov_persistence",        "mid-window",    "high (5-15s)",  "moderate"],
+            ["poly_arbitrage_set",        "any",           "low",            "low — rare"],
+            ["poly_repricing",            "mid-or-late",   "very high (<5s)", "moderate"],
+            ["poly_short_binary_directional", "post-cutoff peek", "high",  "high — main BTC-5m"],
+            ["polymarket_market_maker",   "continuous",    "low",            "low — depth-bound"],
+        ]
+    )
+
+    # ── Source cross-reference
+    add_heading(doc, "8. Source cross-reference", level=1)
+    add_paragraph(doc, "Where each concept lives in each repo:", bold=True)
+    add_table(doc,
+        ["Concept", "polymarket-2dollar-bot/mac", "HFT/docs/strategies", "PolymarketAutomation"],
+        [
+            ["Sub-second WS price store",
+             "polybot/pricefeed.py + scripts/pricefeed.py",
+             "—",
+             "src/lib/arena/realtime-ticks.ts"],
+            ["Arbitrage edge",
+             "polybot/microstructure.py arbitrage_edge()",
+             "—",
+             "src/lib/quant/microstructure.ts"],
+            ["Repricing edge",
+             "polybot/microstructure.py repricing_edge()",
+             "—",
+             "src/lib/quant/microstructure.ts + decidePolyRepricing"],
+            ["OFI / OBI",
+             "polybot/microstructure.py orderbook_imbalance()",
+             "microstructure-signals.md §2.3 (OFI formal)",
+             "src/lib/quant/microstructure.ts orderbookImbalance()"],
+            ["Latency tier framework",
+             "—",
+             "latency-arbitrage.md §2.1",
+             "src/lib/arena/event-timing.ts (T3 implicit)"],
+            ["Binary lifecycle phases",
+             "analysis/architecture_report.py",
+             "event-driven.md §2.6",
+             "src/lib/arena/event-timing.ts eventPhase()"],
+            ["Markov persistence threshold",
+             "—",
+             "—",
+             "src/lib/quant/markov.ts persistenceProbability()"],
+            ["Becker calibration",
+             "polybot/quant.py becker_*",
+             "—",
+             "src/lib/quant/becker-calibration.ts"],
+        ]
+    )
+
+    add_heading(doc, "9. Next moves", level=1)
+    add_paragraph(doc,
+        "Items in the original polymarket-2dollar-bot framework not yet ported:"
+    )
+    add_paragraph(doc,
+        "• directional_arb_tilt as its own genome kind (helper exists in microstructure.ts; needs decide function).")
+    add_paragraph(doc,
+        "• near_resolution_edge as its own genome kind (helper exists; near-resolution-scrape.ts has the strategy already, would need genome wrapper).")
+    add_paragraph(doc,
+        "• Hermes-style nightly self-tuner (2dollar-bot's tuner.py) — currently we have arena evolution but no per-agent param-update loop driven by realized PnL diagnostics.")
+    add_paragraph(doc,
+        "• Walk-forward / PBO overfit battery (HFT's commit cd85cad/289dafb pattern) — important before any live promotion at scale.")
+
+    doc.save(OUT_LATENCY)
+    print(f"  -> {OUT_LATENCY} ({OUT_LATENCY.stat().st_size // 1024} KB)")
+
+
 def main() -> None:
     print(f"Generating docs into {ANALYSIS}")
     print("Document 1: Variables + Strategies reference")
@@ -1007,6 +1264,8 @@ def main() -> None:
     stats = fetch_live_stats()
     state = read_factory_state()
     build_doc_architecture_and_timing(stats, state)
+    print("Document 3: Latency + Event Map")
+    build_doc_latency_and_event_map()
     print("Done.")
 
 

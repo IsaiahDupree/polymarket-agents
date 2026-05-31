@@ -20,6 +20,7 @@ import { peekOracleCache } from "./llm-oracle";
 import { assetToFeed, assetToCbProduct, getBinaryMeta, type BinaryAsset } from "./short-binaries";
 import { buildTransitionMatrix, monteCarlo, priceToState } from "@/lib/quant/markov";
 import { calibrateProbability } from "@/lib/quant/becker-calibration";
+import { arbitrageEdge, repricingEdge } from "@/lib/quant/microstructure";
 import {
   parseDurationMin, minToResolution, eventPhase, coinbaseTickAgeSec, matchesPhase,
   type EventPhaseFilter,
@@ -343,6 +344,8 @@ function decideForSub(g: import("./genome").SubGenome, agent: LiveAgent, ctx: Ti
     case "llm_probability_oracle": return decideLlmProbabilityOracle(g, agent, ctx);
     case "poly_short_binary_directional": return decidePolyShortBinary(g, agent, ctx);
     case "markov_persistence":   return decideMarkovPersistence(g, agent, ctx);
+    case "poly_arbitrage_set":   return decidePolyArbitrageSet(g, agent, ctx);
+    case "poly_repricing":       return decidePolyRepricing(g, agent, ctx);
   }
 }
 
@@ -565,6 +568,8 @@ export function decide(agent: LiveAgent, ctx: TickContext, rng: () => number): S
     case "llm_probability_oracle": return decideLlmProbabilityOracle(g, agent, ctx);
     case "poly_short_binary_directional": return decidePolyShortBinary(g, agent, ctx);
     case "markov_persistence":   return decideMarkovPersistence(g, agent, ctx);
+    case "poly_arbitrage_set":   return decidePolyArbitrageSet(g, agent, ctx);
+    case "poly_repricing":       return decidePolyRepricing(g, agent, ctx);
     case "multi_strategy":        return decideMultiStrategy(g, agent, ctx, rng);
   }
 }
@@ -704,6 +709,178 @@ function decideMarkovPersistence(
         `p_${g.params.use_becker_calibration === "yes" ? "calibrated" : "raw"}=${modelProb.toFixed(3)} ` +
         `mkt=${marketPrice.toFixed(3)} edge=${(edge * 100).toFixed(1)}pp ` +
         `(n_states=${nStates} horizon=${timeHorizon})`,
+      time_stop_at: new Date(new Date(ctx.now).getTime() + 24 * 3_600_000).toISOString(),
+    };
+  }
+  return holdSignal();
+}
+
+/**
+ * Polymarket arbitrage-set — port of polymarket-2dollar-bot
+ * polybot/microstructure.py `arbitrage_edge()`. Buys YES + NO together
+ * when the asks sum below $1; locked profit pays out at resolution.
+ *
+ * Implementation note: our Snapshot exposes `latest.price` (the midpoint),
+ * `latest.bid` and `latest.ask`. We model the YES_ask from the binary's
+ * own snapshot (.ask) and the NO_ask from the complement of the YES bid:
+ *   NO_ask ≈ 1 − YES_bid + spread_padding
+ * When bid/ask aren't populated (sim or non-CLOB data), we fall back to
+ * mid-based symmetric pricing so the strategy can still be evaluated.
+ */
+function decidePolyArbitrageSet(
+  g: Extract<Genome, { kind: "poly_arbitrage_set" }>,
+  agent: LiveAgent,
+  ctx: TickContext,
+): Signal {
+  for (const [mid, win] of ctx.snapshots) {
+    if (win.latest.venue !== "sim-poly") continue;
+    if (agent.positions.some((p) => p.market_id === mid)) continue;
+
+    // YES_ask: prefer the explicit ask; fall back to mid + half-spread guess.
+    // NO_ask:  symmetric ≈ 1 − YES_bid (binary contracts complement to $1).
+    const yesAsk = Number.isFinite(win.latest.ask)
+      ? (win.latest.ask as number)
+      : Math.min(0.999, win.latest.price + 0.005);
+    const yesBid = Number.isFinite(win.latest.bid)
+      ? (win.latest.bid as number)
+      : Math.max(0.001, win.latest.price - 0.005);
+    const noAsk = Math.min(0.999, 1 - yesBid + 0.005);
+
+    if (yesAsk + noAsk > g.params.max_set_cost) continue;
+
+    const op = arbitrageEdge(yesAsk, noAsk, g.params.fee_bps, g.params.min_edge);
+    if (!op) continue;
+
+    // Buy YES leg only here — the executor's pair-cover lives in a
+    // separate sweep. The arena scoring captures realized PnL once both
+    // legs settle. We size with the per-leg budget; cap at available cash.
+    const size_usd = Math.min(g.params.entry_size_usd, agent.cash_usd_current);
+    if (size_usd <= 0) continue;
+
+    return {
+      kind: "entry",
+      venue: "sim-poly",
+      market_id: mid,
+      side: "BUY",
+      size_usd,
+      rationale: `arbitrage_set: ${op.detail}`,
+      time_stop_at: new Date(new Date(ctx.now).getTime() + 24 * 3_600_000).toISOString(),
+    };
+  }
+  return holdSignal();
+}
+
+/**
+ * Polymarket repricing — port of polymarket-2dollar-bot
+ * polybot/microstructure.py `repricing_edge()`. The fair-value estimator
+ * is a simple "spot vs strike" rule for binary BTC Up/Down markets:
+ *
+ *   p_fair_yes ≈ 0.5 + clamp(spot_change / strike_band, -0.5, +0.5)
+ *
+ * where spot_change comes from the most recent Coinbase tick relative to
+ * the binary's reference_price (when known). If reference_price is
+ * missing the strategy holds — without it the fair value is undefined.
+ *
+ * Reuses event-timing gates (same shape as markov_persistence).
+ */
+function decidePolyRepricing(
+  g: Extract<Genome, { kind: "poly_repricing" }>,
+  agent: LiveAgent,
+  ctx: TickContext,
+): Signal {
+  const PHASE_CUTOFF_MIN = 3;
+  const phaseFilter: EventPhaseFilter = g.params.event_phase_filter as EventPhaseFilter;
+  const minToRes = g.params.min_time_to_resolution_min;
+  const maxToRes = g.params.max_time_to_resolution_min;
+  const maxSignalAge = g.params.max_signal_age_sec;
+  const timingGatesActive =
+    phaseFilter !== "any" ||
+    minToRes > 0 ||
+    maxToRes < 999 ||
+    maxSignalAge < 9999;
+  const freshTicks = maxSignalAge < 9999
+    ? latestRealtimeTicks(Math.max(maxSignalAge, 60))
+    : null;
+
+  for (const [mid, win] of ctx.snapshots) {
+    if (win.latest.venue !== "sim-poly") continue;
+    if (agent.positions.some((p) => p.market_id === mid)) continue;
+
+    const meta = getBinaryMeta(mid);
+    if (!meta) continue;                          // need binary metadata for fair value
+    if (meta.reference_price == null) continue;   // can't compute fair value without strike
+
+    // ─── Event-timing gates (only when configured) ───────────────────────
+    if (timingGatesActive) {
+      const m = minToResolution(meta.expiry_iso, ctx.now);
+      if (m === null) continue;
+      if (m < minToRes) continue;
+      if (m > maxToRes) continue;
+      if (phaseFilter !== "any") {
+        const dur = parseDurationMin(meta.duration_kind);
+        const phase = eventPhase({
+          expiryIso: meta.expiry_iso,
+          durationMin: dur,
+          now: ctx.now,
+          cutoffMin: PHASE_CUTOFF_MIN,
+        });
+        if (!matchesPhase(phase, phaseFilter)) continue;
+      }
+      if (freshTicks) {
+        const productId = assetToCbProduct(meta.asset);
+        if (productId) {
+          const tick = freshTicks.get(productId);
+          const age = tick ? coinbaseTickAgeSec(tick.ts_unix, ctx.now) : null;
+          if (age === null || age > maxSignalAge) continue;
+        }
+      }
+    }
+    // ─── End event-timing gates ──────────────────────────────────────────
+
+    // Pull a fresh spot price. Prefer the realtime tick (sub-second) when
+    // available, fall back to the snapshot's own price as the next-best
+    // estimate. Both are imperfect but the strategy still has signal if
+    // spot moved by a few bps after the snapshot.
+    const productId = assetToCbProduct(meta.asset);
+    let spotPrice: number | null = null;
+    if (productId && freshTicks) {
+      spotPrice = freshTicks.get(productId)?.price ?? null;
+    }
+    if (spotPrice === null) {
+      // No live tick — try a one-off lookup (cheap, indexed).
+      const fallback = latestRealtimeTicks(900).get(productId ?? "");
+      if (fallback) spotPrice = fallback.price;
+    }
+    if (spotPrice === null || !Number.isFinite(spotPrice)) continue;
+
+    // Fair P(YES) via simple BS-style "where are we vs strike" rule.
+    // Strike-band default: 0.25 % of strike (5-min binary scale). Larger
+    // moves are still clamped to [0, 1].
+    const strike = meta.reference_price;
+    const bandFrac = 0.0025;
+    const move = (spotPrice - strike) / (strike * bandFrac);
+    const fairPYes = Math.max(0, Math.min(1, 0.5 + 0.5 * Math.tanh(move)));
+
+    const marketPYes = win.latest.price;
+    const op = repricingEdge(marketPYes, fairPYes, g.params.min_edge);
+    if (!op) continue;
+
+    // Honor the YES-price band caps (skip BUY YES at expensive prices,
+    // skip SELL YES at cheap prices — capacity / payoff guard).
+    if (op.side === "YES" && marketPYes > g.params.max_yes_price_for_buy) continue;
+    if (op.side === "NO"  && marketPYes < g.params.min_yes_price_for_sell) continue;
+
+    const side: "BUY" | "SELL" = op.side === "YES" ? "BUY" : "SELL";
+    const size_usd = Math.min(g.params.entry_size_usd, agent.cash_usd_current);
+    if (size_usd <= 0) continue;
+
+    return {
+      kind: "entry",
+      venue: "sim-poly",
+      market_id: mid,
+      side,
+      size_usd,
+      rationale: `repricing: ${op.detail} spot=${spotPrice.toFixed(2)} strike=${strike.toFixed(2)}`,
       time_stop_at: new Date(new Date(ctx.now).getTime() + 24 * 3_600_000).toISOString(),
     };
   }

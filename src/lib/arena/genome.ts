@@ -187,6 +187,48 @@ const PolyShortBinaryDirectional = z.object({
  *   - src/lib/quant/becker-calibration.ts (calibration table)
  *   - docs/research/articles/de1lymoon-markov-chains-framework.md
  */
+/**
+ * Polymarket arbitrage set — buy YES + NO together when their asks sum
+ * below $1. Risk-free locked profit; only fires when the set-cost gap
+ * exceeds min_edge after fees. Ported from polymarket-2dollar-bot
+ * polybot/microstructure.py `arbitrage_edge()`.
+ */
+const PolyArbitrageSet = z.object({
+  /** Required (1 - cost - fees) / cost edge to fire. Article default 0.005. */
+  min_edge: num(0.001, 0.05),
+  /** Cap on YES_ask + NO_ask (set cost). Above this, the arb is too thin. */
+  max_set_cost: num(0.85, 0.999),
+  /** Polymarket taker fee on crypto markets, bps. Default 100 (1 %). */
+  fee_bps: num(0, 200),
+  /** Per-leg notional. The strategy buys this much YES AND this much NO. */
+  entry_size_usd: num(2, 100),
+}).strict();
+
+/**
+ * Polymarket repricing edge — directional bet on the lag between the
+ * underlying spot price (Coinbase) and Polymarket's reprice. When the
+ * underlying moves, Polymarket lags by 2-12 seconds (article default per
+ * 0xRicker / Daniro). This strategy fires on |modelProb − marketPrice|
+ * gaps where modelProb comes from a simple spot-vs-strike rule. Reuses
+ * the event-timing knobs added for markov_persistence so an agent can
+ * gate entries to fresh ticks + late-window phases.
+ */
+const PolyRepricing = z.object({
+  /** Required |fairPYes − marketPYes| edge. Article default 0.05. */
+  min_edge: num(0.02, 0.20),
+  /** Don't buy YES above this price; capacity / payoff symmetry. */
+  max_yes_price_for_buy: num(0.40, 0.85),
+  /** Don't sell YES (buy NO) below this price. */
+  min_yes_price_for_sell: num(0.15, 0.60),
+  /** Per-entry stake in USD. */
+  entry_size_usd: num(2, 100),
+  // Event-timing reuse — same gates as markov_persistence (see event-timing.ts).
+  min_time_to_resolution_min: num(0, 30),
+  max_time_to_resolution_min: num(1, 999),
+  event_phase_filter: z.enum(["any", "opening", "mid-window", "late-window", "mid-or-late", "tradeable"]),
+  max_signal_age_sec: num(1, 9999),
+}).strict();
+
 const MarkovPersistence = z.object({
   /** Diagonal floor: T[i,i] ≥ this to count as a "committed directional state". Article default 0.87. */
   min_persistence: num(0.80, 0.99),
@@ -276,6 +318,8 @@ export const SubGenomeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("llm_probability_oracle"), params: LlmProbabilityOracle }),
   z.object({ kind: z.literal("poly_short_binary_directional"), params: PolyShortBinaryDirectional }),
   z.object({ kind: z.literal("markov_persistence"),   params: MarkovPersistence }),
+  z.object({ kind: z.literal("poly_arbitrage_set"),   params: PolyArbitrageSet }),
+  z.object({ kind: z.literal("poly_repricing"),       params: PolyRepricing }),
 ]);
 
 export type SubGenome = z.infer<typeof SubGenomeSchema>;
@@ -309,6 +353,8 @@ export const GenomeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("llm_probability_oracle"), params: LlmProbabilityOracle }),
   z.object({ kind: z.literal("poly_short_binary_directional"), params: PolyShortBinaryDirectional }),
   z.object({ kind: z.literal("markov_persistence"),   params: MarkovPersistence }),
+  z.object({ kind: z.literal("poly_arbitrage_set"),   params: PolyArbitrageSet }),
+  z.object({ kind: z.literal("poly_repricing"),       params: PolyRepricing }),
   z.object({ kind: z.literal("multi_strategy"),       params: MultiStrategy }),
 ]);
 
@@ -329,6 +375,8 @@ export const GENOME_KINDS: GenomeKind[] = [
   "llm_probability_oracle",
   "poly_short_binary_directional",
   "markov_persistence",
+  "poly_arbitrage_set",
+  "poly_repricing",
   "multi_strategy",
 ];
 
@@ -440,6 +488,22 @@ const PARAM_BOUNDS: Record<GenomeKind, Record<string, [number, number] | string[
     min_history: [20, 200],
     use_becker_calibration: ["yes", "no"],
     entry_size_usd: [5, 100],
+    min_time_to_resolution_min: [0, 30],
+    max_time_to_resolution_min: [1, 999],
+    event_phase_filter: ["any", "opening", "mid-window", "late-window", "mid-or-late", "tradeable"],
+    max_signal_age_sec: [1, 9999],
+  },
+  poly_arbitrage_set: {
+    min_edge: [0.001, 0.05],
+    max_set_cost: [0.85, 0.999],
+    fee_bps: [0, 200],
+    entry_size_usd: [2, 100],
+  },
+  poly_repricing: {
+    min_edge: [0.02, 0.20],
+    max_yes_price_for_buy: [0.40, 0.85],
+    min_yes_price_for_sell: [0.15, 0.60],
+    entry_size_usd: [2, 100],
     min_time_to_resolution_min: [0, 30],
     max_time_to_resolution_min: [1, 999],
     event_phase_filter: ["any", "opening", "mid-window", "late-window", "mid-or-late", "tradeable"],
