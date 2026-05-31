@@ -72,9 +72,11 @@ function factory {
                 'dashboard' { npm run factory:dashboard }
                 'dash'      { npm run factory:dashboard }
                 'progress'  { npm run factory:dashboard:once }
+                'windows'   { npm run factory:windows -- @rest }
+                'popup'     { npm run factory:windows -- @rest }
                 default     {
                     Write-Host "factory: unknown subcommand '`$sub'"
-                    Write-Host "usage: factory [start|stop|resume|status|monitor|dashboard|progress] [btc-5m|multi]"
+                    Write-Host "usage: factory [start|stop|resume|status|monitor|dashboard|progress|windows] [btc-5m|multi]"
                 }
             }
         }
