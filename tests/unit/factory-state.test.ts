@@ -32,9 +32,9 @@ function makeTempDir(): string {
 // emptyState
 
 describe("emptyState", () => {
-  it("returns both factories with default values", () => {
+  it("returns all factories with default values", () => {
     const s = emptyState();
-    expect(Object.keys(s.factories).sort()).toEqual(["btc-5m", "multi"]);
+    expect(Object.keys(s.factories).sort()).toEqual(["btc-5m", "multi", "updown"]);
     for (const name of FACTORY_NAMES) {
       const f = s.factories[name];
       expect(f.desired).toBe("stopped");
@@ -266,7 +266,7 @@ describe("lastLines", () => {
 
 describe("parseTargets", () => {
   it("returns all factories when no positional args are given", () => {
-    expect(parseTargets([])).toEqual(["btc-5m", "multi"]);
+    expect(parseTargets([])).toEqual(["btc-5m", "multi", "updown"]);
   });
 
   it("returns only the requested factory when one valid name is given", () => {
@@ -275,6 +275,7 @@ describe("parseTargets", () => {
   });
 
   it("deduplicates repeated names", () => {
+    // Input has 2 distinct names, so dedup returns those 2 (NOT all factories).
     expect(parseTargets(["btc-5m", "btc-5m", "multi"])).toEqual(["btc-5m", "multi"]);
   });
 
@@ -290,7 +291,7 @@ describe("parseTargets", () => {
     const warn = vi.fn();
     // Defensive default: if the operator typo'd every name, do the safer
     // thing (touch everything visible) rather than the silently-empty thing.
-    expect(parseTargets(["foo", "bar"], warn)).toEqual(["btc-5m", "multi"]);
+    expect(parseTargets(["foo", "bar"], warn)).toEqual(["btc-5m", "multi", "updown"]);
     expect(warn).toHaveBeenCalledTimes(2);
   });
 });

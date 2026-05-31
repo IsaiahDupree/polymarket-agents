@@ -79,7 +79,13 @@ const FACTORIES: Record<FactoryName, FactorySpec> = {
     name: "multi",
     scriptPath: resolve("scripts", "worker-multi-kind-factory.ts"),
     logFile: resolve("logs/factory-multi.log"),
-    desc: "12 non-BTC-5m genome kinds (fade_spike, breakout, mm, oracle, …)",
+    desc: "16 non-BTC-5m genome kinds (markov, repricing, near-resolution, …)",
+  },
+  updown: {
+    name: "updown",
+    scriptPath: resolve("scripts", "worker-updown-discovery.ts"),
+    logFile: resolve("logs/factory-updown.log"),
+    desc: "5m/15m Up-Down market discovery (BTC/ETH/SOL/XRP/DOGE × 5m,15m)",
   },
 };
 

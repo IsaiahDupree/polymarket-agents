@@ -15,9 +15,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, openSync, statSync, readSync, closeSync } from "node:fs";
 import { dirname } from "node:path";
 
-export type FactoryName = "btc-5m" | "multi";
+export type FactoryName = "btc-5m" | "multi" | "updown";
 
-export const FACTORY_NAMES: readonly FactoryName[] = ["btc-5m", "multi"];
+export const FACTORY_NAMES: readonly FactoryName[] = ["btc-5m", "multi", "updown"];
 
 export type FactoryState = {
   desired: "running" | "stopped";
@@ -36,7 +36,8 @@ export function emptyState(): StateFile {
   return {
     factories: {
       "btc-5m": { desired: "stopped", pid: null, startedAt: null, startCount: 0 },
-      multi: { desired: "stopped", pid: null, startedAt: null, startCount: 0 },
+      multi:    { desired: "stopped", pid: null, startedAt: null, startCount: 0 },
+      updown:   { desired: "stopped", pid: null, startedAt: null, startCount: 0 },
     },
     updatedAt: new Date().toISOString(),
   };

@@ -76,7 +76,7 @@ function factory {
                 'popup'     { npm run factory:windows -- @rest }
                 default     {
                     Write-Host "factory: unknown subcommand '`$sub'"
-                    Write-Host "usage: factory [start|stop|resume|status|monitor|dashboard|progress|windows] [btc-5m|multi]"
+                    Write-Host "usage: factory [start|stop|resume|status|monitor|dashboard|progress|windows] [btc-5m|multi|updown]"
                 }
             }
         }
