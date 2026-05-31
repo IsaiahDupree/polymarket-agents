@@ -222,6 +222,31 @@ function runLightMigrations(handle: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_sas_strategy ON strategy_article_sources(strategy_id) WHERE strategy_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_sas_module ON strategy_article_sources(module_path) WHERE module_path IS NOT NULL;
   `);
+
+  // 2026-05-31: Polymarket API call cache. Their public endpoints (Gamma
+  // /markets, /events; CLOB /book, /price) don't preserve historical data,
+  // so every call we make is a free sample we'd otherwise lose. The recorder
+  // (src/lib/api-cache/recorder.ts) registers a response logger with the
+  // adapter and persists every successful response here. Backtests later
+  // read from this table instead of re-hitting Polymarket — gives us a
+  // private archive of the live data stream.
+  handle.exec(`
+    CREATE TABLE IF NOT EXISTS api_call_cache (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      source          TEXT NOT NULL,           -- "polymarket-gamma" | "polymarket-clob" | "polymarket-data" | "polymarket-relayer"
+      endpoint        TEXT NOT NULL,           -- "/markets" | "/events" | "/book" | "/price" etc.
+      query_string    TEXT,                    -- raw query (no leading ?). Indexed for lookup.
+      request_method  TEXT NOT NULL DEFAULT 'GET',
+      response_status INTEGER NOT NULL,
+      response_size_bytes INTEGER NOT NULL,
+      response_body   TEXT NOT NULL,           -- the raw JSON body — keep as text for replay fidelity
+      fetched_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_apicache_endpoint_time
+      ON api_call_cache(source, endpoint, fetched_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_apicache_query
+      ON api_call_cache(endpoint, query_string) WHERE query_string IS NOT NULL;
+  `);
 }
 
 export function closeDb() {

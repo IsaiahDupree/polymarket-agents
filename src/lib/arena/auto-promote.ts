@@ -48,12 +48,87 @@ import {
   eligibleKinds,
   isDynamicBlacklistEnabled,
   kindAssetKey,
+  readThresholdsFromEnv as readEligibilityThresholdsFromEnv,
   rollupToKindEligibility,
   type KindAssetPerformance,
-  readThresholdsFromEnv as readEligibilityThresholdsFromEnv,
   type KindPerformance,
 } from "./dynamic-eligibility";
 import type { PaperAgentRow } from "./types";
+import { hardenVerdict, sharpe, type HardenVerdict, type Variant } from "@/lib/quant/overfit-battery";
+
+/**
+ * Run the overfit battery on the current cohort. Mirrors
+ * scripts/audit-overfit.ts but returns the verdict for the gate to
+ * decide. Returns null when the cohort is too small to evaluate
+ * (caller treats null as "pass" — can't gate on no data).
+ */
+function runOverfitGate(opts: {
+  windowDays: number;
+  minTrades: number;
+  topN: number;
+}): HardenVerdict | null {
+  const cohort = db().prepare(`
+    SELECT id, name, trades_count
+      FROM paper_agents
+     WHERE alive = 1 AND trades_count >= ?
+     ORDER BY trades_count DESC
+     LIMIT ?
+  `).all(opts.minTrades, opts.topN) as Array<{ id: number; name: string; trades_count: number }>;
+  if (cohort.length < 2) return null;
+  const cutoffIso = new Date(Date.now() - opts.windowDays * 86_400_000).toISOString();
+  const placeholders = cohort.map(() => "?").join(",");
+  const trades = db().prepare(`
+    SELECT paper_agent_id, realized_pnl_usd, tick_at
+      FROM paper_trades
+     WHERE paper_agent_id IN (${placeholders})
+       AND tick_at >= ?
+       AND realized_pnl_usd IS NOT NULL
+     ORDER BY tick_at ASC
+  `).all(...cohort.map((a) => a.id), cutoffIso) as Array<{
+    paper_agent_id: number; realized_pnl_usd: number; tick_at: string;
+  }>;
+  const byAgent = new Map<number, Array<{ ts: number; pnl: number }>>();
+  for (const t of trades) {
+    const ts = Date.parse(t.tick_at);
+    if (!Number.isFinite(ts)) continue;
+    const list = byAgent.get(t.paper_agent_id) ?? [];
+    list.push({ ts, pnl: t.realized_pnl_usd });
+    byAgent.set(t.paper_agent_id, list);
+  }
+  const oldestMs = Date.now() - opts.windowDays * 86_400_000;
+  const buckets = (agentTrades: Array<{ ts: number; pnl: number }>): number[] => {
+    const out = new Array<number>(opts.windowDays).fill(0);
+    for (const t of agentTrades) {
+      if (t.ts < oldestMs) continue;
+      const dayIdx = Math.min(opts.windowDays - 1, Math.floor((t.ts - oldestMs) / 86_400_000));
+      out[dayIdx] += t.pnl;
+    }
+    return out;
+  };
+  const variants: Variant[] = [];
+  for (const a of cohort) {
+    const agentTrades = byAgent.get(a.id) ?? [];
+    if (agentTrades.length === 0) continue;
+    variants.push({ label: `${a.id}:${a.name.slice(0, 24)}`, returns: buckets(agentTrades) });
+  }
+  if (variants.length < 2) return null;
+  const trialSharpes = variants.map((v) => sharpe(v.returns));
+  let bestIdx = 0;
+  for (let i = 1; i < trialSharpes.length; i++) {
+    if (trialSharpes[i] > trialSharpes[bestIdx]) bestIdx = i;
+  }
+  const T = opts.windowDays;
+  const M: number[][] = [];
+  for (let t = 0; t < T; t++) {
+    M.push(variants.map((v) => v.returns[t] ?? 0));
+  }
+  return hardenVerdict({
+    returnsMatrix: M,
+    variants,
+    trialSharpes,
+    bestReturns: variants[bestIdx].returns,
+  });
+}
 
 const DEFAULT_TOP_N = 3;
 const DEFAULT_MIN_TRADES = 3;
@@ -93,6 +168,43 @@ export function runAutoPromote(opts: { topN?: number; minTrades?: number } = {})
   // demonstrated 90 %+ on paper. Set ARENA_AUTO_PROMOTE_MIN_WIN_RATE=0
   // to disable the gate entirely (not recommended).
   const minWinRate = Number(process.env.ARENA_AUTO_PROMOTE_MIN_WIN_RATE ?? "0.90");
+
+  // Overfit gate. Opt-in via ARENA_REQUIRE_HARDENED_FOR_PROMOTION=1. When
+  // enabled, run the PBO + Deflated Sharpe + walk-forward battery on the
+  // current cohort and ABORT promotion if the cohort fails. This blocks
+  // live promotion when the apparent edge can't be distinguished from a
+  // multiple-testing artifact (see scripts/audit-overfit.ts). Default OFF
+  // so the existing pipeline keeps working; flip the env when ready.
+  if (process.env.ARENA_REQUIRE_HARDENED_FOR_PROMOTION === "1") {
+    const v = runOverfitGate({
+      windowDays: Number(process.env.ARENA_OVERFIT_GATE_WINDOW_DAYS ?? "30"),
+      minTrades,
+      topN: Math.max(topN, 10),
+    });
+    if (v && !v.hardened) {
+      const failedGates = Object.entries(v.pass)
+        .filter(([, ok]) => !ok)
+        .map(([k]) => k)
+        .join(",");
+      insertEvolutionEvent({
+        event_type: "promotion-blocked-overfit",
+        summary:
+          `Auto-promote blocked: cohort failed overfit battery ` +
+          `(PBO=${v.pbo.toFixed(2)} DSR=${v.dsr.toFixed(2)} medOOS=${v.medianOos.toFixed(2)}) ` +
+          `failing=${failedGates || "(none)"}`,
+        payload_json: JSON.stringify({
+          pbo: v.pbo, dsr: v.dsr, median_oos_sharpe: v.medianOos,
+          pass: v.pass, folds: v.folds,
+        }),
+      });
+      return emptyResult({
+        skipped:
+          `cohort failed overfit gate (ARENA_REQUIRE_HARDENED_FOR_PROMOTION=1): ` +
+          `PBO=${v.pbo.toFixed(2)} DSR=${v.dsr.toFixed(2)} medOOS=${v.medianOos.toFixed(2)}; ` +
+          `failing=${failedGates || "(none)"}`,
+      });
+    }
+  }
 
   // 1. Source candidate agents.
   //

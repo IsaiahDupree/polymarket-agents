@@ -194,7 +194,14 @@ describe("samplingMarkets — server ignores limit, client slices", () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({
       ok: true,
       status: 200,
-      text: async () => "{}",
+      // The client now reads text() and JSON.parses it (so the api-cache
+      // recorder gets the raw body), so the test mock must serialize the
+      // payload here, not in json().
+      text: async () => JSON.stringify({
+        data: Array.from({ length: 100 }, (_, i) => ({ token_id: `t${i}` })),
+        count: 100,
+        limit: 1000,
+      }),
       json: async () => ({
         data: Array.from({ length: 100 }, (_, i) => ({ token_id: `t${i}` })),
         count: 100,

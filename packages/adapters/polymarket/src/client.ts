@@ -39,13 +39,47 @@ function fetchTimeoutMs(): number {
   return Number(process.env.POLYMARKET_FETCH_TIMEOUT_MS ?? "10000");
 }
 
+/**
+ * Response logger hook — called once per SUCCESSFUL GET. Workers register a
+ * logger (via `setResponseLogger()` below) that persists every Polymarket
+ * API response into `api_call_cache` for later replay/backtesting. Polymarket
+ * doesn't preserve historical /markets / /book / /price data server-side, so
+ * EVERY call we make is a free data sample we'd otherwise lose.
+ *
+ * The logger is invoked synchronously but should do its own non-blocking write
+ * (queueMicrotask + prepared INSERT) so the hot fetch path stays fast.
+ *
+ * Default = no-op so the adapter has zero hard dependency on the main DB.
+ * The recorder module (src/lib/api-cache/recorder.ts) registers a real one.
+ */
+export type ResponseLogger = (entry: {
+  url: string;
+  method: "GET";
+  status: number;
+  bodyText: string;
+}) => void;
+
+let responseLogger: ResponseLogger | null = null;
+
+export function setResponseLogger(fn: ResponseLogger | null): void {
+  responseLogger = fn;
+}
+
 async function get<T>(url: string, headers: HeadersInit = {}): Promise<T> {
   const r = await fetch(url, {
     method: "GET", headers, cache: "no-store",
     signal: AbortSignal.timeout(fetchTimeoutMs()),
   });
   if (!r.ok) throw new Error(`GET ${url} → ${r.status} ${await r.text().then((t) => t.slice(0, 200))}`);
-  return r.json() as Promise<T>;
+  // We need to read the body text either way (for both JSON parse + cache),
+  // so read once and use the string in both paths. r.json() consumes the
+  // body stream, so we'd need .text() then JSON.parse anyway when caching.
+  const bodyText = await r.text();
+  if (responseLogger) {
+    try { responseLogger({ url, method: "GET", status: r.status, bodyText }); }
+    catch { /* swallow — caching must never break the hot path */ }
+  }
+  return JSON.parse(bodyText) as T;
 }
 
 export const poly = {

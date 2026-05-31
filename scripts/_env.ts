@@ -53,3 +53,10 @@ export const env = {
   RELAYER: process.env.POLYMARKET_RELAYER_HOST ?? "https://relayer-v2.polymarket.com",
   CHAIN_ID: Number(process.env.POLYMARKET_CHAIN_ID ?? "137"),
 } as const;
+
+// API call cache — side-effect import. The recorder registers a response
+// logger with the Polymarket adapter so every successful GET is persisted
+// into api_call_cache for backtests + the overfit battery. No-op when
+// API_CACHE_DISABLED=1. Every worker that imports _env.ts gets this
+// transitively — one line keeps cache coverage uniform across workers.
+import "../src/lib/api-cache/recorder.ts";
