@@ -10,6 +10,7 @@ import { CoinbaseAdapter } from "@adapters/coinbase/adapter";
 import { PolymarketAdapter } from "@adapters/polymarket/adapter";
 import { SimAdapter } from "@adapters/sim/adapter";
 import { appendOrderEvent } from "./order-events";
+import { checkMakerOnly } from "./maker-only-gate";
 import type { SubmitVerdict, UnifiedOrder, VenueAdapter } from "./types";
 
 /**
@@ -23,6 +24,9 @@ import type { SubmitVerdict, UnifiedOrder, VenueAdapter } from "./types";
  *   4. Global RiskEngine.check (notional, daily loss, rate, concentration)
  *   5. Adapter.submit (venue-specific safety gates still apply on top — they
  *      pre-date the router and stay the source of truth for per-venue caps)
+ *   6. Maker-only gate (rejects MARKET orders unless explicitly opted-in;
+ *      cites Becker's +1.12% maker / −1.12% taker empirical rule via
+ *      @de1lymoon article #5)
  *
  * Every gate decision writes to the append-only hash-chained order_events
  * table for an auditable execution trail. Adapters auto-register with the
@@ -160,6 +164,19 @@ export class ExecutionRouter {
         reason: `adapter=${order.venue} does not support type=${order.type}`,
       };
       this.logEvent("rejected_unsupported", order, verdict);
+      return verdict;
+    }
+
+    // Gate 6: Maker-only enforcement (Becker +1.12% / -1.12% rule).
+    // Rejects MARKET orders unless explicitly opted-in. See maker-only-gate.ts.
+    const makerCheck = checkMakerOnly(order);
+    if (!makerCheck.ok) {
+      const verdict: SubmitVerdict = {
+        ok: false,
+        code: makerCheck.code,
+        reason: makerCheck.reason,
+      };
+      this.logEvent("rejected_maker_only", order, verdict);
       return verdict;
     }
 

@@ -52,11 +52,12 @@ const GROUPS: NavGroup[] = [
   },
   {
     label: "Manage",
-    matches: ["/agents", "/strategies", "/trades", "/research", "/evolution", "/settings"],
+    matches: ["/agents", "/strategies", "/trades", "/research", "/articles", "/evolution", "/settings"],
     items: [
       { href: "/agents", label: "Agents", description: "Charters + risk budgets" },
       { href: "/strategies", label: "Strategies", description: "Versioned specs" },
       { href: "/trades", label: "Trades", description: "Local + on-chain" },
+      { href: "/articles", label: "Article triage ★", description: "Twitter threads → gap report → develop one at a time" },
       { href: "/research", label: "Research notes", description: "Theses + sources" },
       { href: "/evolution", label: "Evolution log", description: "Append-only event stream" },
       { href: "/settings", label: "Settings + state ★", description: "Thresholds, heartbeats, learnings, cheat-sheet" },

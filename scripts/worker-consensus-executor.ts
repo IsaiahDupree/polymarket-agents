@@ -131,6 +131,9 @@ export async function pollOnce(): Promise<{ checked: number; executed: number; s
         signalWallets: signal.walletCount ?? signal.wallets?.length,
         signalEffective: signal.effectiveWallets,
         signalClusters: signal.clusterIds,
+        // Time-sensitive: by the time consensus is detected the move is in motion.
+        // Limit order risks not filling. Opt out of the Becker maker-only gate.
+        allowTaker: true,
       },
     };
 

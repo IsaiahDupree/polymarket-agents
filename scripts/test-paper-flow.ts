@@ -75,6 +75,7 @@ async function main() {
       capsuleId: cap.id,
       agentId,
       strategyVersionId: versionId,
+      metadata: { allowTaker: true }, // paper-flow demo bypasses Becker maker-only gate
     });
     console.log(`[paper-flow] ${intent.side} ${intent.size} ${intent.symbol} @ $${intent.refPrice} →`,
       verdict.ok

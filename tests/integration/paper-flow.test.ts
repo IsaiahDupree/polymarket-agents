@@ -95,6 +95,7 @@ describe("paper flow — end-to-end via SimAdapter", () => {
       capsuleId: cap.id,
       agentId,
       strategyVersionId: versionId,
+      metadata: { allowTaker: true },
     });
 
     expect(verdict.ok).toBe(true);

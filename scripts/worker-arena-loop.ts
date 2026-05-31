@@ -24,6 +24,7 @@ import "./_env.ts";
 import { spawnSync } from "node:child_process";
 import { db } from "../src/lib/db/client.ts";
 import { insertEvolutionEvent } from "../src/lib/db/queries.ts";
+import { applyPreflightToGate, runPreflight } from "../src/lib/preflight.ts";
 
 function arg(name: string, fallback?: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -42,16 +43,45 @@ const runOnce = flag("once");
 console.log(`[arena-loop] starting (interval=${intervalMin}min slow=${slowIntervalMin}min target=${dailyTradeTarget}/day once=${runOnce})`);
 
 function todaysTradeCountAcrossCohort(): number {
-  // Count rows in paper_trades created today (UTC) across the consistent-winner cohort.
+  // Count rows in paper_trades created today (UTC) across the consistent-winner
+  // cohort (v1+v2+v3 — keeps the throttle accurate as new cohorts are seeded).
   const row = db()
     .prepare(
       `SELECT COUNT(*) AS n FROM paper_trades t
          JOIN paper_agents a ON a.id = t.paper_agent_id
-        WHERE a.introduced_by = 'consistent-winner-2026-05-30'
+        WHERE a.introduced_by IN (
+                'consistent-winner-2026-05-30',
+                'consistent-winner-v2-2026-05-30',
+                'consistent-winner-v3-2026-05-30'
+              )
           AND date(t.tick_at) = date('now')`,
     )
     .get() as { n: number };
   return row?.n ?? 0;
+}
+
+// F4: run preflight every PREFLIGHT_EVERY_TICKS arena-loop passes. The arena-loop
+// runs every 5-10 min; 6 ticks = 30-60 min preflight cadence which matches the
+// PRD requirement for in-session drift detection.
+const PREFLIGHT_EVERY_TICKS = Math.max(1, Number(process.env.PREFLIGHT_EVERY_TICKS ?? "6"));
+let ticksSincePreflight = PREFLIGHT_EVERY_TICKS; // run once on startup
+
+function maybeRunPreflight(): void {
+  ticksSincePreflight += 1;
+  if (ticksSincePreflight < PREFLIGHT_EVERY_TICKS) return;
+  ticksSincePreflight = 0;
+  try {
+    const result = runPreflight();
+    const gate = applyPreflightToGate(result);
+    if (result.level !== "pass") {
+      console.log(`[arena-loop:preflight] ${result.level.toUpperCase()} — ${result.summary} | gate=${gate.state}`);
+      for (const c of result.checks) {
+        if (c.level !== "pass") console.log(`    ${c.level === "abort" ? "✗" : "⚠"} ${c.name}: ${c.message}`);
+      }
+    }
+  } catch (err) {
+    console.warn(`[arena-loop:preflight] failed: ${(err as Error).message.slice(0, 200)}`);
+  }
 }
 
 function tick(): { trades: number; elapsedMs: number; err?: string } {
@@ -74,6 +104,7 @@ function tick(): { trades: number; elapsedMs: number; err?: string } {
 }
 
 function pass(): void {
+  maybeRunPreflight();
   const todayCount = todaysTradeCountAcrossCohort();
   const overTarget = todayCount >= dailyTradeTarget;
   const r = tick();

@@ -10,8 +10,10 @@
 import "./_env.ts";
 import {
   listAliveAgentsForGen, listAliveElites, listAliveAgentsWithLiveCapsule,
+  listAliveAgentsByIntroducedBy,
   getCurrentGeneration, persistAgentTick,
   insertPaperTrade, toLiveAgent, incrementGenerationTickCount,
+  startGeneration, listGenerations,
 } from "../src/lib/arena/db.ts";
 import { applySignal, decide, markToMarket } from "../src/lib/arena/sim.ts";
 import { buildLiveTickContext } from "../src/lib/arena/context.ts";
@@ -21,14 +23,46 @@ import { applyRiskRails } from "../src/lib/arena/risk-wrapper.ts";
 import { warmOracleCacheForTick } from "../src/lib/arena/oracle-warmer.ts";
 import { resolveExpiredBinaries } from "../src/lib/arena/binary-resolver.ts";
 import { recordHeartbeat } from "../src/lib/heartbeat.ts";
+import { insertEvolutionEvent } from "../src/lib/db/queries.ts";
 
 const EVOLVE_EVERY = Number(process.env.ARENA_EVOLVE_EVERY ?? "50");
+const AUTO_OPEN_NOTE = "auto-opened: throughput vessel (no breed/seal)";
+
+// Cohorts whose agents must participate in every tick regardless of generation
+// membership or capsule kind. These are "trade-only" agents (e.g., the
+// staged-stake consistent-winner cohort) that need continuous ticks for the
+// rolling-50 win-rate gate, not breeding. See docs/prds/max-trades-and-winrate-
+// then-stakeup-2026-05-30.md (F2).
+const ALWAYS_TICK_COHORTS = [
+  "consistent-winner-2026-05-30",
+  "consistent-winner-v2-2026-05-30",
+  "consistent-winner-v3-2026-05-30",
+];
 
 (async () => {
-  const gen = getCurrentGeneration();
+  let gen = getCurrentGeneration();
   if (!gen) {
-    console.error("arena:tick — no open generation. Run `npm run arena:init` first.");
-    process.exit(1);
+    // F1: instead of hard-exiting, open a fresh generation automatically so
+    // the worker loop doesn't stall after the previous gen sealed. These
+    // auto-opened gens are throughput vessels — F3 skips evolve/seal on them.
+    const recent = listGenerations(1);
+    const nextGenNumber = (recent[0]?.gen_number ?? 0) + 1;
+    const newId = startGeneration(nextGenNumber, undefined, AUTO_OPEN_NOTE);
+    gen = getCurrentGeneration();
+    if (!gen) {
+      console.error(`arena:tick — failed to auto-open generation ${nextGenNumber} (id=${newId}).`);
+      process.exit(1);
+    }
+    console.log(`arena:tick → auto-opened gen ${gen.gen_number} (id=${newId})`);
+    try {
+      insertEvolutionEvent({
+        event_type: "gen-auto-opened",
+        summary: `arena:tick auto-opened paper_generations gen=${gen.gen_number} id=${newId} (prev gen sealed)`,
+        payload_json: JSON.stringify({ gen_number: gen.gen_number, id: newId, reason: "throughput-loop" }),
+      });
+    } catch (err) {
+      console.warn(`[arena:tick] evolution event write failed: ${(err as Error).message}`);
+    }
   }
 
   const ctx = buildLiveTickContext();
@@ -55,8 +89,11 @@ const EVOLVE_EVERY = Number(process.env.ARENA_EVOLVE_EVERY ?? "50");
   const currentRows = listAliveAgentsForGen(gen.gen_number);
   const eliteRows = listAliveElites();
   const capsuleRows = listAliveAgentsWithLiveCapsule();
+  // F2: always tick the trade-only cohorts (staged-stake), even when they
+  // aren't bred into the current gen and don't have a live capsule yet.
+  const cohortRows = listAliveAgentsByIntroducedBy(ALWAYS_TICK_COHORTS);
   const seen = new Set<number>();
-  const allRows = [...currentRows, ...eliteRows, ...capsuleRows].filter((r) => {
+  const allRows = [...currentRows, ...eliteRows, ...capsuleRows, ...cohortRows].filter((r) => {
     if (seen.has(r.id)) return false;
     seen.add(r.id);
     return true;
@@ -168,7 +205,8 @@ const EVOLVE_EVERY = Number(process.env.ARENA_EVOLVE_EVERY ?? "50");
     : "";
   const eliteSuffix = eliteRows.length > 0 ? ` elites=${eliteRows.length}` : "";
   const capsuleSuffix = capsuleRows.length > 0 ? ` capsules=${capsuleRows.length}` : "";
-  console.log(`arena:tick gen=${gen.gen_number} agents=${agents.length}${eliteSuffix}${capsuleSuffix} → entries=${stats.entries} exits=${stats.exits} holds=${stats.holds} live=${stats.live_fills}/${stats.live_rejects + stats.live_fills}${railStr}${settleStr}  tick=${tickCount}/${EVOLVE_EVERY}`);
+  const cohortSuffix = cohortRows.length > 0 ? ` cw_cohort=${cohortRows.length}` : "";
+  console.log(`arena:tick gen=${gen.gen_number} agents=${agents.length}${eliteSuffix}${capsuleSuffix}${cohortSuffix} → entries=${stats.entries} exits=${stats.exits} holds=${stats.holds} live=${stats.live_fills}/${stats.live_rejects + stats.live_fills}${railStr}${settleStr}  tick=${tickCount}/${EVOLVE_EVERY}`);
 
   // Heartbeat — let the supervisor know this subsystem is alive.
   recordHeartbeat("arena-tick", {
@@ -181,8 +219,14 @@ const EVOLVE_EVERY = Number(process.env.ARENA_EVOLVE_EVERY ?? "50");
     live_rejects: stats.live_rejects,
   });
 
+  // F3: skip auto-evolve on auto-opened generations. Auto-opened gens are
+  // throughput vessels for trade-only cohorts (staged-stake program) — they
+  // accumulate ticks without ever being sealed or used to breed children.
+  // Breeding happens via factory:btc-5m on its own 6h cadence.
+  const isAutoOpened = (gen.notes ?? "").startsWith("auto-opened:");
+
   // Auto-evolve trigger
-  if (EVOLVE_EVERY > 0 && tickCount >= EVOLVE_EVERY) {
+  if (!isAutoOpened && EVOLVE_EVERY > 0 && tickCount >= EVOLVE_EVERY) {
     console.log(`arena:tick → auto-evolve triggered (tick_count=${tickCount} >= ARENA_EVOLVE_EVERY=${EVOLVE_EVERY})`);
     const result = await runEvolveOnce();
     recordHeartbeat("arena-evolve", { result_skipped: "skipped" in result ? result.skipped : null });

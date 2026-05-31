@@ -121,6 +121,21 @@ export function listAliveAgentsWithLiveCapsule(): PaperAgentRow[] {
   ).all() as PaperAgentRow[];
 }
 
+/** Alive agents whose introduced_by matches one of the given cohort tags.
+ *  Used by arena-tick to keep "trade-only" cohorts (staged-stake) ticking
+ *  even when not bred into the current gen and without a live capsule —
+ *  needed for the rolling-50 win-rate accumulation, per
+ *  docs/prds/max-trades-and-winrate-then-stakeup-2026-05-30.md (F2). */
+export function listAliveAgentsByIntroducedBy(tags: readonly string[]): PaperAgentRow[] {
+  if (tags.length === 0) return [];
+  const placeholders = tags.map(() => "?").join(",");
+  return db().prepare(
+    `SELECT * FROM paper_agents
+      WHERE alive = 1 AND introduced_by IN (${placeholders})
+      ORDER BY id`,
+  ).all(...tags) as PaperAgentRow[];
+}
+
 /** Agents holding a position on the given token, regardless of alive status.
  *  Used by the binary resolver so positions on retired agents still settle
  *  correctly (previously these were stranded — a position opened on tick T,

@@ -88,6 +88,7 @@
     "scan:markov-persistence": "tsx scripts/scan-markov-persistence.ts",
     "worker:markov-exec": "tsx scripts/worker-markov-persistence-exec.ts",
     "worker:markov-exec:once": "tsx scripts/worker-markov-persistence-exec.ts --once",
+    "seed:markov-capsule": "tsx scripts/seed-markov-persistence-capsule.ts",
     "worker:nrs-exec": "tsx scripts/worker-near-resolution-exec.ts",
     "emit:opportunity-notes": "tsx scripts/emit-opportunity-notes.ts",
     "backtest": "tsx scripts/backtest.ts",

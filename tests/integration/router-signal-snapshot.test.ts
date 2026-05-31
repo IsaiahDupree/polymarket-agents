@@ -53,6 +53,7 @@ describe("router pre-submit signal snapshot", () => {
       type: "MARKET",
       size: 100,
       refPrice: 0.5,
+      metadata: { allowTaker: true },
     };
     const v = await router.submit(order);
     expect(v.ok).toBe(true);
@@ -88,6 +89,7 @@ describe("router pre-submit signal snapshot", () => {
       type: "MARKET",
       size: 100,
       refPrice: 0.5,
+      metadata: { allowTaker: true },
     });
     const snaps = snapshotEvents();
     expect(snaps).toHaveLength(1);
@@ -119,6 +121,7 @@ describe("router pre-submit signal snapshot", () => {
       type: "MARKET",
       size: 50,
       refPrice: 0.97,
+      metadata: { allowTaker: true },
     });
     const p = JSON.parse(snapshotEvents()[0].payload_json);
     expect(p.counts.opportunities).toBe(1);
@@ -137,6 +140,7 @@ describe("router pre-submit signal snapshot", () => {
       type: "MARKET",
       size: 100,
       refPrice: 0.5,
+      metadata: { allowTaker: true },
     });
     // Same clientOrderId → DUPLICATE_CLIENT_ORDER_ID rejection
     const v = await router.submit({
@@ -147,6 +151,7 @@ describe("router pre-submit signal snapshot", () => {
       type: "MARKET",
       size: 100,
       refPrice: 0.5,
+      metadata: { allowTaker: true },
     });
     expect(v.ok).toBe(false);
     // Only one snapshot (from the first successful submit)

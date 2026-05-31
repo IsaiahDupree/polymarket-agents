@@ -1,5 +1,6 @@
 import { listAgents, listAllStrategies, listRecentTrades, listEvolutionEvents } from "@/lib/db/queries";
 import { poly } from "@adapters/polymarket/client";
+import { ArticleFocusCard } from "@/components/ArticleFocusCard";
 import Link from "next/link";
 
 export const dynamic = "force-dynamic";
@@ -27,6 +28,8 @@ export default async function Home() {
         <h1 className="text-2xl font-semibold tracking-tight">Control plane</h1>
         <p className="text-zinc-400 mt-1">Local workspace for AI-agent prediction-market strategies and research.</p>
       </div>
+
+      <ArticleFocusCard />
 
       <section className="grid grid-cols-4 gap-4">
         <Stat label="Active agents" value={`${activeAgents}/${agents.length}`} />

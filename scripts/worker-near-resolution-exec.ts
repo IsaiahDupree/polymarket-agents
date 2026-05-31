@@ -161,6 +161,11 @@ export async function pollOnce(): Promise<{ checked: number; executed: number; s
         edge,
         annualizedEdge: payload.annualizedEdge,
         sizeMult,
+        // TODO(becker-maker-only): NRS positions are NOT time-sensitive
+        // (weeks-to-resolution, 0.97-edge already locked). Should convert
+        // to LIMIT at entryPrice and let the maker rebate compound.
+        // Keeping MARKET + allowTaker for now to preserve current behavior.
+        allowTaker: true,
       },
     };
 

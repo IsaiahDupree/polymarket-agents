@@ -58,6 +58,10 @@ beforeEach(() => { memDb?.close(); memDb = null; });
 afterEach(() => { memDb?.close(); memDb = null; });
 
 function baseOrder(overrides: Partial<UnifiedOrder> = {}): UnifiedOrder {
+  // These tests exercise router gates other than maker-only — explicitly
+  // opt-in to taker so the new gate doesn't reject every test order.
+  // Dedicated coverage for the maker-only gate lives in
+  // tests/unit/maker-only-gate.test.ts.
   return {
     clientOrderId: `coid-${Math.random().toString(36).slice(2)}`,
     venue: "fake",
@@ -66,6 +70,7 @@ function baseOrder(overrides: Partial<UnifiedOrder> = {}): UnifiedOrder {
     type: "MARKET",
     size: 1,
     refPrice: 100,
+    metadata: { allowTaker: true },
     ...overrides,
   };
 }

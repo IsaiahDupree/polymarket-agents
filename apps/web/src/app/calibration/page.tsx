@@ -13,6 +13,8 @@ import Link from "next/link";
 import { AutoRefresh } from "@/components/AutoRefresh";
 import { buildCalibrationReport, bucketVerdict } from "@/lib/decision/calibration";
 import { loadLabeledDecisions } from "@/lib/decision/calibration-loader";
+import { CALIBRATION_TABLE, calibrateProbability, calibrationGap } from "@/lib/quant/becker-calibration";
+import { getArticleByTitle } from "@/lib/articles/queries";
 
 export const dynamic = "force-dynamic";
 
@@ -179,6 +181,8 @@ export default async function CalibrationPage({ searchParams }: PageProps) {
         )}
       </section>
 
+      <BeckerSection />
+
       <section className="card border-zinc-700/50">
         <h3 className="text-sm text-zinc-300 mb-2">How to read this page</h3>
         <ul className="text-xs text-zinc-400 space-y-1">
@@ -201,5 +205,86 @@ export default async function CalibrationPage({ searchParams }: PageProps) {
         </ul>
       </section>
     </main>
+  );
+}
+
+function BeckerSection() {
+  const beckerArticle = getArticleByTitle(
+    "How To Use Markov Chains To Win Every Single Trade + [Quant Framework]",
+  );
+  return (
+    <>
+      <section className="card border-emerald-700/40">
+        <div className="flex items-baseline justify-between mb-2">
+          <h2 className="card-title m-0">Becker longshot-bias prior</h2>
+          {beckerArticle && (
+            <Link
+              href={`/articles/${beckerArticle.id}`}
+              className="text-xs text-zinc-500 hover:text-accent-blue"
+            >
+              from @de1lymoon · 72.1M-trade study →
+            </Link>
+          )}
+        </div>
+        <p className="text-xs text-zinc-400 mb-3">
+          Empirical resolution rates from Becker&apos;s 2026 analysis of 72.1M Polymarket trades.
+          Use as a <em>post-processor</em> for any model probability before sizing a taker trade —
+          the crowd systematically overprices longshots, so a naive 5¢ entry only wins 4.18% of the time.
+          When/if we have enough resolved-trade data of our own, re-derive these constants and replace.
+        </p>
+        <div className="overflow-x-auto">
+          <table className="text-xs w-full">
+            <thead className="text-zinc-500">
+              <tr>
+                <th className="text-left px-2 py-1">Raw price / model p</th>
+                <th className="text-left px-2 py-1">Calibrated p (actual win rate)</th>
+                <th className="text-left px-2 py-1">Gap (pp)</th>
+                <th className="text-left px-2 py-1">Reading</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Object.entries(CALIBRATION_TABLE)
+                .map(([raw, cal]) => ({ raw: Number(raw), cal }))
+                .sort((a, b) => a.raw - b.raw)
+                .map(({ raw, cal }) => {
+                  const gapPp = calibrationGap(raw) * 100;
+                  const sign = gapPp > 0 ? "+" : "";
+                  const color =
+                    Math.abs(gapPp) < 0.5
+                      ? "text-zinc-400"
+                      : gapPp > 0
+                        ? "text-accent-red"
+                        : "text-accent-green";
+                  const reading =
+                    gapPp > 0.5
+                      ? "raw overstates true (longshot bias) — discount before sizing"
+                      : gapPp < -0.5
+                        ? "raw understates true (favorites zone) — modest boost"
+                        : "near-fair";
+                  return (
+                    <tr key={raw} className="border-t border-ink-800">
+                      <td className="px-2 py-1 tabular-nums text-zinc-200">{(raw * 100).toFixed(0)}¢</td>
+                      <td className="px-2 py-1 tabular-nums text-zinc-200">{(cal * 100).toFixed(2)}%</td>
+                      <td className={`px-2 py-1 tabular-nums ${color}`}>{sign}{gapPp.toFixed(2)}</td>
+                      <td className="px-2 py-1 text-zinc-500">{reading}</td>
+                    </tr>
+                  );
+                })}
+            </tbody>
+          </table>
+        </div>
+        <details className="mt-3 text-xs text-zinc-500">
+          <summary className="cursor-pointer hover:text-zinc-300">Interactive examples</summary>
+          <div className="mt-2 grid grid-cols-2 gap-2 max-w-md">
+            {[0.03, 0.12, 0.45, 0.62, 0.88].map((p) => (
+              <div key={p} className="text-zinc-400">
+                Raw <span className="text-zinc-200 tabular-nums">{(p * 100).toFixed(0)}¢</span> → calibrated{" "}
+                <span className="text-emerald-300 tabular-nums">{(calibrateProbability(p) * 100).toFixed(2)}%</span>
+              </div>
+            ))}
+          </div>
+        </details>
+      </section>
+    </>
   );
 }

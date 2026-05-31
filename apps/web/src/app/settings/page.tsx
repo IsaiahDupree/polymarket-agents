@@ -17,6 +17,7 @@
  */
 import Link from "next/link";
 import { db } from "@/lib/db/client";
+import { ArticleFocusCard } from "@/components/ArticleFocusCard";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 60;
@@ -201,6 +202,8 @@ export default function SettingsPage() {
           ship in v2.
         </p>
       </div>
+
+      <ArticleFocusCard />
 
       {/* ───── 1. Strategy thresholds (gen-2 agents) ───── */}
       <section className="card">

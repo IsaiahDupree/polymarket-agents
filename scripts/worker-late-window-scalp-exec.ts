@@ -168,6 +168,9 @@ export async function pollOnce(): Promise<{ checked: number; executed: number; s
         sizeUsd: orderUsd, // adapter reads this for MARKET path notional
         intent: "entry",
         rationale: `late-window scalp · ${payload.asset} ${payload.side} @ $${payload.entry_price.toFixed(3)} · ${stillRemaining.toFixed(0)}s remaining`,
+        // Last-30s window: a limit order won't fill in time. Becker maker-only
+        // gate opt-out is legitimate here.
+        allowTaker: true,
       },
     } as UnifiedOrder & { capsuleId: string };
 
