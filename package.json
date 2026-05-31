@@ -114,6 +114,8 @@
     "snapshot:evolution": "tsx scripts/snapshot-evolution-state.ts",
     "supervisor": "tsx scripts/supervisor.ts",
     "audit:wallet": "tsx scripts/audit-wallet.ts",
+    "audit:overfit": "tsx scripts/audit-overfit.ts",
+    "audit:overfit:json": "tsx scripts/audit-overfit.ts --json",
     "scan:late-window-scalp": "tsx scripts/scan-late-window-scalp.ts",
     "worker:late-window-scalp-exec": "tsx scripts/worker-late-window-scalp-exec.ts",
     "observe:late-window-scalp": "tsx scripts/observe-late-window-scalp.ts",

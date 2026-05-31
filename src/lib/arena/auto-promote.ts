@@ -44,8 +44,12 @@ import { inferDiversityProfile } from "@risk/capsules/diversity-inference";
 import { allocateByFitness } from "./fitness-allocation";
 import {
   decideKindEligibility,
+  decideKindAssetEligibility,
   eligibleKinds,
   isDynamicBlacklistEnabled,
+  kindAssetKey,
+  rollupToKindEligibility,
+  type KindAssetPerformance,
   readThresholdsFromEnv as readEligibilityThresholdsFromEnv,
   type KindPerformance,
 } from "./dynamic-eligibility";
@@ -123,47 +127,94 @@ export function runAutoPromote(opts: { topN?: number; minTrades?: number } = {})
   let liveEligibleKinds: string[];
   const dynamicEnabled = isDynamicBlacklistEnabled();
   if (dynamicEnabled) {
-    // Query rolling-window perf grouped by genome kind.
+    // Query rolling-window perf grouped by (genome kind, asset). The asset
+    // is derived in two places:
+    //   - poly_* trades: LEFT JOIN poly_binaries ON token_id = market_id
+    //   - cb_*   trades: agent genome's params.product_id ("BTC-USD" → "BTC")
+    //   - other  trades: bucketed under "any"
+    //
+    // This grants Hermes-style granularity: cb_breakout that's +$200 on BTC
+    // but -$50 on SOL keeps the BTC slice live and blacklists only the SOL
+    // slice. The previous per-kind aggregation netted them to +$150 and
+    // disabled nothing.
     const windowDays = Number(process.env.ARENA_DYNAMIC_KIND_WINDOW_DAYS ?? "30");
     const cutoffIso = new Date(Date.now() - windowDays * 86_400_000).toISOString();
-    // The paper_trades table doesn't carry the genome kind — derive via the
-    // agent's genome_json. We aggregate trades+pnl per kind.
     const tradeRows = db().prepare(
-      `SELECT pa.genome_json AS genome_json, pt.realized_pnl_usd
+      `SELECT pa.genome_json AS genome_json, pt.realized_pnl_usd, pt.market_id,
+              pb.asset       AS poly_asset
          FROM paper_trades pt
          JOIN paper_agents pa ON pa.id = pt.paper_agent_id
+    LEFT JOIN poly_binaries pb ON pb.token_id = pt.market_id
         WHERE pt.tick_at >= ?`,
-    ).all(cutoffIso) as Array<{ genome_json: string; realized_pnl_usd: number }>;
-    const byKind = new Map<string, { trades: number; pnl: number }>();
+    ).all(cutoffIso) as Array<{
+      genome_json: string;
+      realized_pnl_usd: number;
+      market_id: string;
+      poly_asset: string | null;
+    }>;
+
+    const byKindAsset = new Map<string, { kind: string; asset: string; trades: number; pnl: number }>();
     for (const r of tradeRows) {
       let kind: string | null = null;
-      try { kind = JSON.parse(r.genome_json).kind ?? null; } catch { /* skip */ }
+      let cbAsset: string | null = null;
+      try {
+        const g = JSON.parse(r.genome_json);
+        kind = g.kind ?? null;
+        // cb_* genomes carry the asset on params.product_id ("BTC-USD" etc.)
+        if (typeof kind === "string" && kind.startsWith("cb_") && g.params?.product_id) {
+          cbAsset = String(g.params.product_id).split("-")[0]; // BTC-USD → BTC
+        }
+      } catch { /* skip */ }
       if (!kind) continue;
-      const entry = byKind.get(kind) ?? { trades: 0, pnl: 0 };
-      entry.trades++;
+      const asset = r.poly_asset || cbAsset || "any";
+      const key = kindAssetKey(kind, asset);
+      const entry = byKindAsset.get(key) ?? { kind, asset, trades: 0, pnl: 0 };
+      entry.trades += 1;
       entry.pnl += Number.isFinite(r.realized_pnl_usd) ? r.realized_pnl_usd : 0;
-      byKind.set(kind, entry);
+      byKindAsset.set(key, entry);
     }
-    // Always include all safety-ceiling kinds in the decision (even those
-    // with zero trades in the window → grace period gets them through).
+
+    // For every kind in the safety ceiling, emit at least one perf row.
+    // A kind with zero trades in the window gets a synthetic (kind, "any")
+    // entry so the grace-period gate lets it through.
     const thresholds = readEligibilityThresholdsFromEnv();
-    const perfs: KindPerformance[] = [];
+    const perfs: KindAssetPerformance[] = [];
     for (const kind of thresholds.safetyCeiling) {
-      const entry = byKind.get(kind) ?? { trades: 0, pnl: 0 };
-      perfs.push({ kind, trades_in_window: entry.trades, realized_pnl_in_window: entry.pnl });
+      let hasAny = false;
+      for (const entry of byKindAsset.values()) {
+        if (entry.kind === kind) {
+          perfs.push({
+            kind: entry.kind, asset: entry.asset,
+            trades_in_window: entry.trades, realized_pnl_in_window: entry.pnl,
+          });
+          hasAny = true;
+        }
+      }
+      if (!hasAny) {
+        perfs.push({ kind, asset: "any", trades_in_window: 0, realized_pnl_in_window: 0 });
+      }
     }
-    const decisions = decideKindEligibility(perfs, thresholds);
-    liveEligibleKinds = [...eligibleKinds(decisions)];
-    // Log the decision set for observability.
+
+    const decisions = decideKindAssetEligibility(perfs, thresholds);
+    // Roll the granular decisions up to per-kind for the existing pipeline:
+    // a kind is eligible if ANY (kind, asset) slice is eligible.
+    liveEligibleKinds = [...rollupToKindEligibility(decisions)];
+
+    // Log the granular blacklist for observability. The summary is per-
+    // (kind, asset) so the operator can see WHICH asset slice failed,
+    // not just "cb_breakout is disabled" with no further detail.
     const blacklisted = decisions.filter((d) => !d.eligible && d.reason === "negative_pnl");
     if (blacklisted.length > 0) {
       insertEvolutionEvent({
-        event_type: "kind-dynamic-blacklisted",
-        summary: `Dynamic kind blacklist: ${blacklisted.length} kind(s) excluded due to negative ${windowDays}d PnL`,
+        event_type: "kind-asset-dynamic-blacklisted",
+        summary: `Dynamic blacklist: ${blacklisted.length} (kind, asset) slice(s) excluded due to negative ${windowDays}d PnL`,
         payload_json: JSON.stringify({
           window_days: windowDays,
-          blacklisted: blacklisted.map((d) => ({ kind: d.kind, pnl: d.realized_pnl_in_window, trades: d.trades_in_window })),
-          eligible_now: liveEligibleKinds,
+          blacklisted: blacklisted.map((d) => ({
+            kind: d.kind, asset: d.asset,
+            pnl: d.realized_pnl_in_window, trades: d.trades_in_window,
+          })),
+          eligible_kinds_after_rollup: liveEligibleKinds,
         }),
       });
     }
