@@ -53,16 +53,20 @@ $catalog = @{
 
 # Normalize the requested view list. Unknown names emit a warning and are
 # dropped — same forgiving shape as the `factory` PS function.
-$views = @()
+#
+# Note: PowerShell variable names are case-INSENSITIVE, so we cannot reuse
+# the lowercase $selected — it would alias the input $Views and reassigning
+# to @() would silently zero out the parameter. Use a distinct name.
+$selected = @()
 foreach ($v in $Views) {
     $key = $v.Trim().ToLower()
     if ($catalog.ContainsKey($key)) {
-        if ($views -notcontains $key) { $views += $key }
+        if ($selected -notcontains $key) { $selected += $key }
     } else {
         Write-Warning "open-windows: unknown view '$v' — valid: $($catalog.Keys -join ', ')"
     }
 }
-if ($views.Count -eq 0) {
+if ($selected.Count -eq 0) {
     Write-Error "open-windows: no valid views requested. Pass -Views dashboard,monitor"
     exit 1
 }
@@ -90,7 +94,7 @@ if ($haveWt) {
     # Syntax: `wt new-tab --title T -d D pwsh -NoExit -Command "..." `; split-pane -V -d D pwsh ...`
     # The literal `;` between actions is escaped with backtick in PS so it
     # reaches wt as a separator rather than terminating our PS statement.
-    $first, $rest = $views[0], $views[1..$views.Count]
+    $first, $rest = $selected[0], $selected[1..$selected.Count]
     $firstTitle = $catalog[$first].title
     $firstCmd   = Build-Command $catalog[$first].cmd
     $args = @(
@@ -111,14 +115,14 @@ if ($haveWt) {
         $args += (Build-Command $catalog[$v].cmd)
     }
 
-    Write-Host "Opening Windows Terminal with $($views.Count) pane(s):"
-    foreach ($v in $views) { Write-Host "  - $($catalog[$v].title)  ->  $($catalog[$v].cmd)" }
+    Write-Host "Opening Windows Terminal with $($selected.Count) pane(s):"
+    foreach ($v in $selected) { Write-Host "  - $($catalog[$v].title)  ->  $($catalog[$v].cmd)" }
     Start-Process -FilePath "wt.exe" -ArgumentList $args
 }
 else {
     # Fallback: one Start-Process per view → one window per view.
-    Write-Host "Opening $($views.Count) separate PowerShell window(s):"
-    foreach ($v in $views) {
+    Write-Host "Opening $($selected.Count) separate PowerShell window(s):"
+    foreach ($v in $selected) {
         Write-Host "  - $($catalog[$v].title)  ->  $($catalog[$v].cmd)"
         $launchCmd = Build-Command $catalog[$v].cmd
         # -NoExit so the window stays after the command finishes / Ctrl-C.
