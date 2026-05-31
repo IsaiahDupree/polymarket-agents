@@ -168,3 +168,112 @@ function numFromEnv(raw: string | undefined, fallback: number): number {
   const n = Number(cleaned);
   return Number.isFinite(n) ? n : fallback;
 }
+
+// ---------------------------------------------------------------------------
+// Per-(kind, asset) eligibility — Hermes-style granular blacklist.
+//
+// The per-kind version above bundles every asset under one bucket. That
+// hides the case where (cb_breakout, BTC) is +$200 but (cb_breakout, SOL)
+// is -$300 — net positive, kind stays eligible, but the actual SOL
+// performance is destroying value. Per-(kind, asset) catches it and only
+// disables the failing slice while letting the winning slice through.
+//
+// Ported from polymarket-2dollar-bot/polybot/tuner.py — the (asset, kind)
+// granularity of group_stats() + the disable/re-enable loop.
+// ---------------------------------------------------------------------------
+
+export type KindAssetPerformance = {
+  kind: string;
+  /** Asset symbol — BTC/ETH/SOL/XRP/DOGE/BNB/HYPE/etc, or "any" for asset-agnostic kinds. */
+  asset: string;
+  trades_in_window: number;
+  realized_pnl_in_window: number;
+};
+
+export type KindAssetDecision = {
+  kind: string;
+  asset: string;
+  eligible: boolean;
+  reason: "grace_period" | "positive_pnl" | "negative_pnl" | "not_in_safety_ceiling";
+  trades_in_window: number;
+  realized_pnl_in_window: number;
+};
+
+/**
+ * Compose a composite key from (kind, asset). Used in the disabled set
+ * to track granular blacklist state without nested maps.
+ */
+export function kindAssetKey(kind: string, asset: string): string {
+  return `${kind}::${asset}`;
+}
+
+/**
+ * Same algorithm as decideKindEligibility but keyed by (kind, asset).
+ * The safety ceiling still operates per-kind (asset doesn't change
+ * whether a kind is structurally allowed to trade live).
+ */
+export function decideKindAssetEligibility(
+  perfs: readonly KindAssetPerformance[],
+  thresholds: EligibilityThresholds,
+): KindAssetDecision[] {
+  return perfs.map((p) => {
+    if (!thresholds.safetyCeiling.has(p.kind)) {
+      return {
+        kind: p.kind,
+        asset: p.asset,
+        eligible: false,
+        reason: "not_in_safety_ceiling",
+        trades_in_window: p.trades_in_window,
+        realized_pnl_in_window: p.realized_pnl_in_window,
+      };
+    }
+    if (p.trades_in_window < thresholds.gracePeriodTrades) {
+      return {
+        kind: p.kind,
+        asset: p.asset,
+        eligible: true,
+        reason: "grace_period",
+        trades_in_window: p.trades_in_window,
+        realized_pnl_in_window: p.realized_pnl_in_window,
+      };
+    }
+    if (p.realized_pnl_in_window > thresholds.pnlFloor) {
+      return {
+        kind: p.kind,
+        asset: p.asset,
+        eligible: true,
+        reason: "positive_pnl",
+        trades_in_window: p.trades_in_window,
+        realized_pnl_in_window: p.realized_pnl_in_window,
+      };
+    }
+    return {
+      kind: p.kind,
+      asset: p.asset,
+      eligible: false,
+      reason: "negative_pnl",
+      trades_in_window: p.trades_in_window,
+      realized_pnl_in_window: p.realized_pnl_in_window,
+    };
+  });
+}
+
+/** Convenience: extract eligible (kind, asset) pairs as a Set of composite keys. */
+export function eligibleKindAssets(decisions: readonly KindAssetDecision[]): Set<string> {
+  return new Set(decisions.filter((d) => d.eligible).map((d) => kindAssetKey(d.kind, d.asset)));
+}
+
+/**
+ * Roll up per-(kind, asset) decisions into a per-kind verdict for use by
+ * the existing per-kind auto-promote pipeline. A kind is rolled-up
+ * eligible if ANY of its (kind, asset) slices is eligible — preserving
+ * the winning slice instead of disabling the whole kind for one bad
+ * asset.
+ */
+export function rollupToKindEligibility(decisions: readonly KindAssetDecision[]): Set<string> {
+  const out = new Set<string>();
+  for (const d of decisions) {
+    if (d.eligible) out.add(d.kind);
+  }
+  return out;
+}
