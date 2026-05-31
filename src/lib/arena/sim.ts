@@ -18,6 +18,8 @@ import { acceleration, loadRecentCandles, loadRecentCandlesFromCoindesk, velocit
 import { recentFillsForWalletInCategory, walletWinRateByCategory } from "@/lib/wallet/category-stats";
 import { peekOracleCache } from "./llm-oracle";
 import { assetToFeed, getBinaryMeta, type BinaryAsset } from "./short-binaries";
+import { buildTransitionMatrix, monteCarlo, priceToState } from "@/lib/quant/markov";
+import { calibrateProbability } from "@/lib/quant/becker-calibration";
 import type {
   LiveAgent, PaperTradeRow, Position, Signal, Snapshot, SnapshotWindow, TickContext, Venue,
 } from "./types";
@@ -335,6 +337,7 @@ function decideForSub(g: import("./genome").SubGenome, agent: LiveAgent, ctx: Ti
     case "polymarket_market_maker": return decidePolyMarketMaker(g, agent, ctx);
     case "llm_probability_oracle": return decideLlmProbabilityOracle(g, agent, ctx);
     case "poly_short_binary_directional": return decidePolyShortBinary(g, agent, ctx);
+    case "markov_persistence":   return decideMarkovPersistence(g, agent, ctx);
   }
 }
 
@@ -556,8 +559,88 @@ export function decide(agent: LiveAgent, ctx: TickContext, rng: () => number): S
     case "polymarket_market_maker": return decidePolyMarketMaker(g, agent, ctx);
     case "llm_probability_oracle": return decideLlmProbabilityOracle(g, agent, ctx);
     case "poly_short_binary_directional": return decidePolyShortBinary(g, agent, ctx);
+    case "markov_persistence":   return decideMarkovPersistence(g, agent, ctx);
     case "multi_strategy":        return decideMultiStrategy(g, agent, ctx, rng);
   }
+}
+
+/**
+ * Markov persistence decide — @0xRicker / @de1lymoon framework.
+ *
+ * For each open Polymarket position-free market, build a transition matrix
+ * from the market's recent price history. Check the diagonal at the current
+ * state — if persistence ≥ min_persistence (article default 0.87) AND ≤
+ * max_persistence (skip frozen chains), run a Monte Carlo walk to estimate
+ * the YES-at-expiry probability. Optionally apply Becker calibration. Fire
+ * an entry when |modelProb − marketPrice| ≥ min_edge.
+ *
+ * Returns a single Signal per tick — the first qualifying market. The next
+ * tick will re-evaluate; agents that mass-enter positions get sized down by
+ * cash availability rather than fanning out across markets in one step.
+ */
+function decideMarkovPersistence(
+  g: Extract<Genome, { kind: "markov_persistence" }>,
+  agent: LiveAgent,
+  ctx: TickContext,
+): Signal {
+  const nStates = Math.round(g.params.n_states);
+  const nSims = Math.round(g.params.n_sims);
+  const timeHorizon = Math.round(g.params.time_horizon_steps);
+  const minHistory = Math.round(g.params.min_history);
+
+  for (const [mid, win] of ctx.snapshots) {
+    if (win.latest.venue !== "sim-poly") continue;
+    if (agent.positions.some((p) => p.market_id === mid)) continue;
+    if (win.history.length < minHistory) continue;
+
+    // Build the transition matrix from the market's own price history.
+    // buildTransitionMatrix throws if there are fewer than 2 prices; we
+    // already gate on minHistory >= 20 so that's safe.
+    const prices = win.history.map((s) => s.price);
+    let T;
+    try {
+      T = buildTransitionMatrix(prices, nStates);
+    } catch {
+      continue;  // bad history — skip rather than crash the whole tick
+    }
+    const currentState = priceToState(win.latest.price, nStates);
+    const persistence = T[currentState][currentState];
+
+    // Twin gate: too-low persistence = no signal; too-high = frozen chain.
+    if (persistence < g.params.min_persistence) continue;
+    if (persistence > g.params.max_persistence) continue;
+
+    const mc = monteCarlo(T, currentState, timeHorizon, { nSims });
+    let modelProb = mc.probYes;
+    if (g.params.use_becker_calibration === "yes") {
+      modelProb = calibrateProbability(modelProb);
+    }
+
+    const marketPrice = win.latest.price;
+    const edge = modelProb - marketPrice;
+    if (Math.abs(edge) < g.params.min_edge) continue;
+
+    // Edge > 0 → model says YES is undervalued → BUY (long YES).
+    // Edge < 0 → model says YES is overvalued    → SELL (short YES / equiv buy NO).
+    const side: "BUY" | "SELL" = edge > 0 ? "BUY" : "SELL";
+    const size_usd = Math.min(g.params.entry_size_usd, agent.cash_usd_current);
+    if (size_usd <= 0) continue;
+
+    return {
+      kind: "entry",
+      venue: "sim-poly",
+      market_id: mid,
+      side,
+      size_usd,
+      rationale:
+        `markov: persistence=${persistence.toFixed(3)} ` +
+        `p_${g.params.use_becker_calibration === "yes" ? "calibrated" : "raw"}=${modelProb.toFixed(3)} ` +
+        `mkt=${marketPrice.toFixed(3)} edge=${(edge * 100).toFixed(1)}pp ` +
+        `(n_states=${nStates} horizon=${timeHorizon})`,
+      time_stop_at: new Date(new Date(ctx.now).getTime() + 24 * 3_600_000).toISOString(),
+    };
+  }
+  return holdSignal();
 }
 
 // ----------------------------------------------------------------------------

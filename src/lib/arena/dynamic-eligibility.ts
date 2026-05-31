@@ -67,6 +67,10 @@ export const DEFAULT_SAFETY_CEILING: ReadonlySet<string> = new Set([
   "cb_momentum_burst",
   "cb_mean_reversion",
   "cb_breakout",
+  // Markov persistence: registered 2026-05-30. Uses the same Polymarket CLOB
+  // execution path as poly_short_binary_directional, so live-eligibility
+  // reduces to "the executor can route it correctly" — which it can.
+  "markov_persistence",
 ]);
 
 export type EligibilityDecision = {

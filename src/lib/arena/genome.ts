@@ -168,6 +168,45 @@ const PolyShortBinaryDirectional = z.object({
   max_positions_per_asset: num(1, 4).default(1),
 }).strict();
 
+/**
+ * Markov persistence — @0xRicker / @de1lymoon strategy. Build a transition
+ * matrix from the market's price history (N price-buckets), check the
+ * diagonal entry T[currentState][currentState] ≥ min_persistence (the
+ * "p(j*,j*) ≥ 0.87" cutoff in the articles). When the chain has committed
+ * directionality, run a Monte Carlo walk of `time_horizon_steps` to
+ * estimate the YES-at-expiry probability, optionally apply Becker
+ * calibration (72.1M-trade longshot-bias correction), then fire when
+ * |modelProb − marketPrice| ≥ min_edge.
+ *
+ * max_persistence filters out FROZEN chains (price hasn't moved in N
+ * windows; matrix diagonal at 0.99+ means "no signal, all noise" — fading
+ * a frozen chain is a textbook losing trade).
+ *
+ * Sources:
+ *   - src/lib/quant/markov.ts (matrix builder + MC walk)
+ *   - src/lib/quant/becker-calibration.ts (calibration table)
+ *   - docs/research/articles/de1lymoon-markov-chains-framework.md
+ */
+const MarkovPersistence = z.object({
+  /** Diagonal floor: T[i,i] ≥ this to count as a "committed directional state". Article default 0.87. */
+  min_persistence: num(0.80, 0.99),
+  /** Diagonal ceiling: T[i,i] ≤ this. Anything higher is a frozen chain (no signal). */
+  max_persistence: num(0.95, 0.999),
+  /** Required |modelProb − marketPrice|. Article default 0.05 (5%). */
+  min_edge: num(0.02, 0.15),
+  /** Number of price buckets. Article default 10. Higher = finer states but needs more history. */
+  n_states: num(6, 16),
+  /** MC simulation count. 1000 enough for ±3pp accuracy; 5000 for ±1pp. */
+  n_sims: num(500, 5000),
+  /** MC walk length. For 5-min binaries this is ~3-12 steps; for event markets 20-30. */
+  time_horizon_steps: num(1, 30),
+  /** Minimum price-history length required before applying this strategy. */
+  min_history: num(20, 200),
+  /** Apply Becker's longshot-bias correction to the raw MC probability. */
+  use_becker_calibration: z.enum(["yes", "no"]),
+  entry_size_usd: num(5, 100),
+}).strict();
+
 const LlmProbabilityOracle = z.object({
   // The "20-line Claude brain" from the Lunar article: AI estimates P_true,
   // EV+Kelly rail (P2) gates and resizes, deterministic execution. Inert by
@@ -209,6 +248,7 @@ export const SubGenomeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("polymarket_market_maker"), params: PolyMarketMaker }),
   z.object({ kind: z.literal("llm_probability_oracle"), params: LlmProbabilityOracle }),
   z.object({ kind: z.literal("poly_short_binary_directional"), params: PolyShortBinaryDirectional }),
+  z.object({ kind: z.literal("markov_persistence"),   params: MarkovPersistence }),
 ]);
 
 export type SubGenome = z.infer<typeof SubGenomeSchema>;
@@ -241,6 +281,7 @@ export const GenomeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("polymarket_market_maker"), params: PolyMarketMaker }),
   z.object({ kind: z.literal("llm_probability_oracle"), params: LlmProbabilityOracle }),
   z.object({ kind: z.literal("poly_short_binary_directional"), params: PolyShortBinaryDirectional }),
+  z.object({ kind: z.literal("markov_persistence"),   params: MarkovPersistence }),
   z.object({ kind: z.literal("multi_strategy"),       params: MultiStrategy }),
 ]);
 
@@ -260,6 +301,7 @@ export const GENOME_KINDS: GenomeKind[] = [
   "polymarket_market_maker",
   "llm_probability_oracle",
   "poly_short_binary_directional",
+  "markov_persistence",
   "multi_strategy",
 ];
 
@@ -360,6 +402,17 @@ const PARAM_BOUNDS: Record<GenomeKind, Record<string, [number, number] | string[
     min_yes_price_for_sell: [0.15, 0.60],
     entry_size_usd: [1, 50],
     max_positions_per_asset: [1, 4],
+  },
+  markov_persistence: {
+    min_persistence: [0.80, 0.99],
+    max_persistence: [0.95, 0.999],
+    min_edge: [0.02, 0.15],
+    n_states: [6, 16],
+    n_sims: [500, 5000],
+    time_horizon_steps: [1, 30],
+    min_history: [20, 200],
+    use_becker_calibration: ["yes", "no"],
+    entry_size_usd: [5, 100],
   },
 };
 
