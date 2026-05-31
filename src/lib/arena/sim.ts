@@ -17,9 +17,14 @@ import type { Genome } from "./genome";
 import { acceleration, loadRecentCandles, loadRecentCandlesFromCoindesk, velocity, type Candle } from "./momentum";
 import { recentFillsForWalletInCategory, walletWinRateByCategory } from "@/lib/wallet/category-stats";
 import { peekOracleCache } from "./llm-oracle";
-import { assetToFeed, getBinaryMeta, type BinaryAsset } from "./short-binaries";
+import { assetToFeed, assetToCbProduct, getBinaryMeta, type BinaryAsset } from "./short-binaries";
 import { buildTransitionMatrix, monteCarlo, priceToState } from "@/lib/quant/markov";
 import { calibrateProbability } from "@/lib/quant/becker-calibration";
+import {
+  parseDurationMin, minToResolution, eventPhase, coinbaseTickAgeSec, matchesPhase,
+  type EventPhaseFilter,
+} from "./event-timing";
+import { latestRealtimeTicks } from "./realtime-ticks";
 import type {
   LiveAgent, PaperTradeRow, Position, Signal, Snapshot, SnapshotWindow, TickContext, Venue,
 } from "./types";
@@ -588,10 +593,72 @@ function decideMarkovPersistence(
   const timeHorizon = Math.round(g.params.time_horizon_steps);
   const minHistory = Math.round(g.params.min_history);
 
+  // Event-timing knobs (ported from polymarket-2dollar-bot/mac framework):
+  //   resolution-window gate, lifecycle-phase gate, signal-freshness gate.
+  // Phase classification uses the same 0.25/0.75 split as the analysis doc;
+  // cutoffMin defaults to 3 (Polymarket's typical pre-resolution lock-out).
+  const PHASE_CUTOFF_MIN = 3;
+  const phaseFilter: EventPhaseFilter = g.params.event_phase_filter as EventPhaseFilter;
+  const minToRes = g.params.min_time_to_resolution_min;
+  const maxToRes = g.params.max_time_to_resolution_min;
+  const maxSignalAge = g.params.max_signal_age_sec;
+  // Timing gates are only "on" when the operator has configured at least
+  // one of them to a non-default-disabled value. Keeping the markov decide
+  // function backward-compatible with the pre-timing test fixtures (and
+  // with non-binary markets) requires this check — without it, every
+  // agent would HOLD on markets that lack poly_binaries metadata.
+  const timingGatesActive =
+    phaseFilter !== "any" ||
+    minToRes > 0 ||
+    maxToRes < 999 ||
+    maxSignalAge < 9999;
+  // Pull a fresh-tick map only if the signal-age gate is on (avoids a DB
+  // hit per call when the operator has disabled freshness checking).
+  const freshTicks = maxSignalAge < 9999
+    ? latestRealtimeTicks(Math.max(maxSignalAge, 60))
+    : null;
+
   for (const [mid, win] of ctx.snapshots) {
     if (win.latest.venue !== "sim-poly") continue;
     if (agent.positions.some((p) => p.market_id === mid)) continue;
     if (win.history.length < minHistory) continue;
+
+    // ─── Event-timing gates (only when configured) ───────────────────────
+    if (timingGatesActive) {
+      // Need binary metadata to evaluate any timing gate. Markets without
+      // it (non-binary or unseeded tokens) are ineligible when gates are on.
+      const meta = getBinaryMeta(mid);
+      if (!meta) continue;
+      const m = minToResolution(meta.expiry_iso, ctx.now);
+      if (m === null) continue;
+      if (m < minToRes) continue;
+      if (m > maxToRes) continue;
+
+      if (phaseFilter !== "any") {
+        const dur = parseDurationMin(meta.duration_kind);
+        const phase = eventPhase({
+          expiryIso: meta.expiry_iso,
+          durationMin: dur,
+          now: ctx.now,
+          cutoffMin: PHASE_CUTOFF_MIN,
+        });
+        if (!matchesPhase(phase, phaseFilter)) continue;
+      }
+
+      if (freshTicks) {
+        // Map the binary's underlying asset to a Coinbase product_id.
+        const productId = assetToCbProduct(meta.asset);
+        if (productId) {
+          const tick = freshTicks.get(productId);
+          const age = tick ? coinbaseTickAgeSec(tick.ts_unix, ctx.now) : null;
+          // No tick at all → assume stale (the WS daemon may have died).
+          if (age === null || age > maxSignalAge) continue;
+        }
+        // Asset not on Coinbase (BNB/HYPE/UNKNOWN) → no freshness check
+        // possible; fall through and let the persistence + edge gates rule.
+      }
+    }
+    // ─── End event-timing gates ──────────────────────────────────────────
 
     // Build the transition matrix from the market's own price history.
     // buildTransitionMatrix throws if there are fewer than 2 prices; we

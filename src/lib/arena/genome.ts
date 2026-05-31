@@ -205,6 +205,33 @@ const MarkovPersistence = z.object({
   /** Apply Becker's longshot-bias correction to the raw MC probability. */
   use_becker_calibration: z.enum(["yes", "no"]),
   entry_size_usd: num(5, 100),
+  // ─── Event-timing gates (ported from polymarket-2dollar-bot/mac) ──────────
+  /**
+   * Skip the market if minutes-to-resolution < this. 0 = no floor.
+   * Useful for staying out of the "post-cutoff" zone where Polymarket's
+   * order book stops accepting new orders (typically 2-4 min before expiry).
+   */
+  min_time_to_resolution_min: num(0, 30),
+  /**
+   * Skip the market if minutes-to-resolution > this. 999 = no ceiling.
+   * Useful for restricting the strategy to 5-min / 15-min binaries and
+   * skipping long-horizon event markets where the Markov chain is the
+   * wrong model.
+   */
+  max_time_to_resolution_min: num(1, 999),
+  /**
+   * Phase filter — only fire in the matching lifecycle phase. Article §2.6
+   * (event-driven Polymarket resolution scrape) operates in late-window;
+   * Markov persistence is typically strongest in mid-window when the chain
+   * has committed but exit-liquidity hasn't widened yet.
+   */
+  event_phase_filter: z.enum(["any", "opening", "mid-window", "late-window", "mid-or-late", "tradeable"]),
+  /**
+   * Maximum age (seconds) of the most recent Coinbase tick at decision time.
+   * If the tick is staler than this, skip — the leader-lagger race window
+   * has closed. 9999 = disabled.
+   */
+  max_signal_age_sec: num(1, 9999),
 }).strict();
 
 const LlmProbabilityOracle = z.object({
@@ -413,6 +440,10 @@ const PARAM_BOUNDS: Record<GenomeKind, Record<string, [number, number] | string[
     min_history: [20, 200],
     use_becker_calibration: ["yes", "no"],
     entry_size_usd: [5, 100],
+    min_time_to_resolution_min: [0, 30],
+    max_time_to_resolution_min: [1, 999],
+    event_phase_filter: ["any", "opening", "mid-window", "late-window", "mid-or-late", "tradeable"],
+    max_signal_age_sec: [1, 9999],
   },
 };
 

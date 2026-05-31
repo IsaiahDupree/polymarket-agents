@@ -90,6 +90,13 @@ const baseParams = {
   min_history: 30,
   use_becker_calibration: "no" as const,
   entry_size_usd: 20,
+  // Event-timing gates — all disabled by default so the legacy tests
+  // (which use synthetic market_ids without binary metadata) keep firing.
+  // A dedicated test block below exercises these gates with mocked metadata.
+  min_time_to_resolution_min: 0,
+  max_time_to_resolution_min: 999,
+  event_phase_filter: "any" as const,
+  max_signal_age_sec: 9999,
 };
 
 function makeGenome(overrides: Partial<typeof baseParams> = {}): Genome {
