@@ -81,6 +81,21 @@ export const poly = {
     if (opts.archived !== undefined) qs.set("archived", String(opts.archived));
     return get<any[]>(`${readEnv().GAMMA}/markets?${qs}`);
   },
+  /**
+   * Fetch a single market by its Gamma slug. The slug for crypto Up/Down
+   * binary series is deterministic: `{asset}-updown-{recurrence}-{window_start_ts}`.
+   * Used by the updown-discovery scanner to enumerate live + just-closed
+   * windows without paginating through /events.
+   *
+   * Returns the first market row (or null when the slug doesn't resolve)
+   * since Gamma returns an array even for single-slug queries.
+   */
+  marketBySlug: async (slug: string): Promise<any | null> => {
+    const qs = new URLSearchParams({ slug });
+    const raw = await get<any[] | { data: any[] }>(`${readEnv().GAMMA}/markets?${qs}`);
+    const rows = Array.isArray(raw) ? raw : (raw?.data ?? []);
+    return rows.length > 0 ? rows[0] : null;
+  },
   tags: (limit = 20) => get<any[]>(`${readEnv().GAMMA}/tags?limit=${limit}`),
   search: (q: string, limitPerType = 5) =>
     get<any>(`${readEnv().GAMMA}/public-search?q=${encodeURIComponent(q)}&limit_per_type=${limitPerType}`),
