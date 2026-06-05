@@ -30,10 +30,30 @@ import argparse
 import json
 import sqlite3
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Iterator, Optional
+
+# Local logging helper — every log line tagged + optionally JSON-formatted
+# via env (TRAIN_LOG_JSON=1). Falls back to print() if the helper isn't
+# importable (e.g., the module is run in isolation by a unit test).
+try:
+    from logging_utils import get_logger
+    _LOG = get_logger("build_dataset")
+except Exception:
+    _LOG = None
+
+
+def _log(level: str, msg: str, **extra) -> None:
+    """Tiny wrapper — uses the structured logger when available, falls
+    back to print so tests that import this module without the logger
+    still see output."""
+    if _LOG is not None:
+        getattr(_LOG, level.lower(), _LOG.info)(msg, extra=extra)
+    else:
+        print(msg, flush=True)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = REPO_ROOT / "data" / "polymarket.db"
@@ -100,11 +120,24 @@ def slug_meta(slug: str) -> tuple[Optional[str], Optional[str]]:
 
 
 def iso_to_unix(s: Optional[str]) -> Optional[float]:
+    """Parse SQLite-stored ISO datetimes as UTC.
+
+    SQLite's `datetime('now')` returns 'YYYY-MM-DD HH:MM:SS' with no
+    timezone marker. Python's fromisoformat treats that as naive, and
+    `.timestamp()` then interprets naive as LOCAL time — which on a US
+    Eastern machine puts fetched_at 4-5 hours ahead of UTC.
+
+    Bug observed 2026-06-05: every pre-expiry tick looked post-expiry
+    because cache_fetched_at (parsed local) > expiry_utc, so the
+    dataset builder produced zero rows. Fix: stamp naive datetimes UTC.
+    """
     if not s:
         return None
     try:
-        # Tolerate trailing Z + microseconds.
-        return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
     except Exception:
         return None
 
@@ -151,20 +184,23 @@ def load_trajectory(conn: sqlite3.Connection, slug: str) -> list[CachedTick]:
 
 
 def label_for_slug(conn: sqlite3.Connection, slug: str) -> Optional[int]:
-    """Resolved YES outcome from poly_binaries; None when still open."""
-    row = conn.execute(
-        """
-        SELECT settled, outcome_yes
-          FROM poly_binaries
-         WHERE event_slug = ?
-            OR question LIKE ?
-         LIMIT 1
-        """,
-        (slug, f"%{slug}%"),
-    ).fetchone()
-    if row is None or not row[0] or row[1] is None:
-        return None
-    return int(row[1])
+    """Resolved YES outcome from poly_binaries; None when still open.
+
+    Uses the prebuilt label_index when available — the LIKE fallback on
+    `question` was an O(table-scan) hot spot in the original build
+    (28K binaries × 10K slugs = 280 M row-comparisons). The prebuilt
+    dict turns it into O(1) per call.
+    """
+    cache = getattr(label_for_slug, "_cache", None)
+    if cache is None:
+        cache = {}
+        for ev_slug, settled, outcome in conn.execute(
+            "SELECT event_slug, settled, outcome_yes FROM poly_binaries "
+            "WHERE settled=1 AND outcome_yes IS NOT NULL AND event_slug IS NOT NULL"
+        ):
+            cache[ev_slug] = int(outcome)
+        setattr(label_for_slug, "_cache", cache)
+    return cache.get(slug)
 
 
 def book_features_at(
@@ -204,8 +240,23 @@ def book_features_at(
 def build_rows(
     conn: sqlite3.Connection, slug: str, history_lookback: int = HISTORY_LOOKBACK
 ) -> list[dict]:
-    """One slug → N decision points (every tick after min history)."""
-    traj = load_trajectory(conn, slug)
+    """One slug → N decision points (every tick after min history).
+
+    Filters post-expiry ticks BEFORE the lookback check — workers keep
+    recording for hours after a binary settles, so most slugs have 50+
+    post-expiry ticks and only 5-30 useful pre-expiry ones. The earlier
+    version checked the lookback against the full trajectory then dropped
+    post-expiry inside the loop, which made nearly every slug ineligible.
+    """
+    full_traj = load_trajectory(conn, slug)
+    if not full_traj:
+        return []
+    end_unix = iso_to_unix(full_traj[0].end_iso)
+    # Pre-filter: only ticks whose fetched_at < expiry are valid decisions.
+    if end_unix is not None:
+        traj = [t for t in full_traj if (iso_to_unix(t.fetched_at) or 0) < end_unix]
+    else:
+        traj = full_traj
     if len(traj) <= history_lookback:
         return []
     asset, recurrence = slug_meta(slug)
@@ -213,11 +264,8 @@ def build_rows(
     out: list[dict] = []
     for i in range(history_lookback, len(traj)):
         cur = traj[i]
-        end_unix = iso_to_unix(cur.end_iso)
         dec_unix = iso_to_unix(cur.fetched_at) or 0.0
         min_to_res = ((end_unix - dec_unix) / 60.0) if end_unix else None
-        if min_to_res is not None and min_to_res < 0:
-            continue  # decision-time later than expiry — skip
         window = [traj[j].yes_price for j in range(i - history_lookback, i)]
         row = {
             "slug": slug,
@@ -264,24 +312,50 @@ def main() -> int:
     rows: list[dict] = []
     n_slugs = 0
     n_with_label = 0
+    _log("info", "prebuilding label index", db=args.db, asset=args.asset, max_slugs=args.max_slugs)
+    t_idx = time.monotonic()
+    _ = label_for_slug(conn, "__warm__")
+    label_index_size = len(getattr(label_for_slug, "_cache", {}))
+    _log("info", "label index ready",
+         size=label_index_size, took_sec=round(time.monotonic() - t_idx, 2))
+
+    _log("info", "iterating slugs",
+         max_slugs=args.max_slugs, lookback=args.lookback)
+    t_iter = time.monotonic()
     for slug in iter_slugs(conn, args.asset, args.max_slugs):
         n_slugs += 1
-        srows = build_rows(conn, slug, args.lookback)
+        try:
+            srows = build_rows(conn, slug, args.lookback)
+        except Exception as e:
+            # Don't let one bad slug torch the whole build — log it and continue.
+            _log("warning", "slug build failed", slug=slug, error=str(e))
+            continue
+        if n_slugs % 50 == 0:
+            _log("info", "progress",
+                 slugs_scanned=n_slugs, rows_so_far=len(rows),
+                 labeled=n_with_label,
+                 secs_elapsed=round(time.monotonic() - t_iter, 1))
         if not srows:
             continue
         if srows[0]["label_resolved_yes"] is not None:
             n_with_label += 1
         rows.extend(srows)
+    _log("info", "iteration complete",
+         slugs_scanned=n_slugs, rows_total=len(rows),
+         labeled=n_with_label,
+         took_sec=round(time.monotonic() - t_iter, 1))
     df = pd.DataFrame(rows)
-    print(f"slugs scanned : {n_slugs}")
-    print(f"slugs labeled : {n_with_label}")
-    print(f"rows total    : {len(df)}")
-    print(f"rows labeled  : {df['label_resolved_yes'].notna().sum() if len(df) else 0}")
+    rows_labeled = int(df["label_resolved_yes"].notna().sum()) if len(df) else 0
+    _log("info", "build summary",
+         slugs_scanned=n_slugs, slugs_labeled=n_with_label,
+         rows_total=len(df), rows_labeled=rows_labeled)
     if len(df):
         df.to_parquet(out_path, index=False)
-        print(f"wrote         : {out_path}")
+        _log("info", "wrote parquet", path=str(out_path),
+             bytes=out_path.stat().st_size if out_path.exists() else 0)
     else:
-        print("no rows produced — wait for trajectories to deepen + more binaries to settle")
+        _log("warning",
+             "no rows produced — wait for trajectories to deepen + more binaries to settle")
     return 0
 
 
