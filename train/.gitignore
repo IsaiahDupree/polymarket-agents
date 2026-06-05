@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+# Model artifacts — large binary files, regenerable. Keep training
+# checkpoints + final weights off git.
+*.pt
+*.pth
+*.onnx
+*.ckpt
+checkpoints/
+runs/
+# Datasets — same as model artifacts. Built from api_call_cache +
+# historical-candles.db; not source-of-truth.
+datasets/*.parquet
+datasets/*.npy
+datasets/*.npz
+datasets/cache/

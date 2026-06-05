@@ -1,0 +1,35 @@
+# GPU training pipeline — isolated Python venv (train/.venv).
+# Install order matters: PyTorch first via its custom index, then the rest.
+#
+#   train/.venv/Scripts/python -m pip install --upgrade pip
+#   train/.venv/Scripts/python -m pip install torch torchvision \
+#       --index-url https://download.pytorch.org/whl/cu124
+#   train/.venv/Scripts/python -m pip install -r train/requirements.txt
+#
+# Torch is intentionally NOT pinned here — the wheel index above carries
+# CUDA-flavored builds that pip won't pull from PyPI by default.
+
+# Core numerics / data
+numpy>=2.0
+pandas>=2.2
+scipy>=1.13
+scikit-learn>=1.5
+
+# Model utilities
+einops>=0.8
+
+# RL (PPO entry/exit policy)
+gymnasium>=0.29
+stable-baselines3>=2.4
+
+# DB / IO — same SQLite the Node side uses (read-only access)
+# Pure-python; no native binary mismatch with the better-sqlite3 the
+# TypeScript code uses.
+
+# Plotting (training curves, calibration)
+matplotlib>=3.9
+
+# Progress + CLI
+tqdm>=4.66
+rich>=13.7
+typer>=0.12

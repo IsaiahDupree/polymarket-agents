@@ -120,6 +120,8 @@
     "replay:markov": "tsx scripts/replay-markov-on-cache.ts",
     "backtest:walk-markov": "tsx scripts/backtest-walk-markov.ts",
     "backtest:walk-markov:per-asset": "tsx scripts/backtest-walk-markov.ts --per-asset",
+    "mirror:cache": "tsx scripts/mirror-cache-to-passport.ts --once",
+    "mirror:cache:loop": "tsx scripts/mirror-cache-to-passport.ts --loop",
     "scan:late-window-scalp": "tsx scripts/scan-late-window-scalp.ts",
     "worker:late-window-scalp-exec": "tsx scripts/worker-late-window-scalp-exec.ts",
     "observe:late-window-scalp": "tsx scripts/observe-late-window-scalp.ts",

@@ -20,7 +20,15 @@ import { fileURLToPath } from "node:url";
 // across npm-workspace contexts (apps/web/ vs root).
 const __thisFile = fileURLToPath(import.meta.url);
 const REPO_ROOT = resolve(dirname(__thisFile), "..", "..", "..");
-export const HISTORICAL_DB_PATH = resolve(REPO_ROOT, "data/historical-candles.db");
+/**
+ * Default lives in the repo's `data/` dir. Override with HISTORICAL_DB_PATH
+ * env var to redirect (e.g. to an external drive so the 860 MB BTC archive
+ * doesn't sit on the laptop SSD). 2026-06-05: WD MyPassport target is
+ * `E:\Coding\datasets\historical-candles.db`.
+ */
+export const HISTORICAL_DB_PATH = process.env.HISTORICAL_DB_PATH
+  ? resolve(process.env.HISTORICAL_DB_PATH)
+  : resolve(REPO_ROOT, "data/historical-candles.db");
 
 let _rw: Database.Database | null = null;
 let _ro: Database.Database | null = null;
