@@ -80,14 +80,35 @@ def main() -> int:
         print("FAIL: fewer than 200 labeled rows — wait for more binaries to settle.", flush=True)
         return 1
 
-    price_cols = [f"price_window_{i}" for i in range(-HISTORY_LOOKBACK, 0)]
-    for c in price_cols + SCALAR_COLS:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+    # Auto-detect lookback from parquet columns. Dataset builder defaults to 10
+    # but operators can build with --lookback 4 / 5 / 20 for ablation; the
+    # trainer adapts so we don't have to keep them in lockstep.
+    available = [c for c in df.columns if c.startswith("price_window_-")]
+    if not available:
+        print("FAIL: parquet has no price_window_* columns.", flush=True)
+        return 1
+    indices = sorted(int(c.replace("price_window_-", "")) for c in available)
+    actual_lookback = max(indices)
+    price_cols = [f"price_window_{-i}" for i in range(actual_lookback, 0, -1)]
+    print(f"detected lookback={actual_lookback} (price cols: {len(price_cols)})", flush=True)
+
+    # Scalar columns: use whichever subset of the canonical list is
+    # actually present in the parquet. The dataset builder doesn't always
+    # emit book-derived columns (total_bid_depth / spread) — those need
+    # a book_snapshots join that hasn't been wired into build_rows yet.
+    # Missing scalars just shrink the input dim; everything else works.
+    scalar_cols = [c for c in SCALAR_COLS if c in df.columns]
+    if not scalar_cols:
+        print("FAIL: no recognised scalar columns in parquet.", flush=True)
+        return 1
+    print(f"using {len(scalar_cols)}/{len(SCALAR_COLS)} scalar cols: {scalar_cols}", flush=True)
+
+    for c in price_cols + scalar_cols:
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
 
     X_seq = df[price_cols].to_numpy(dtype=np.float32)
-    X_seq = X_seq.reshape(-1, HISTORY_LOOKBACK, 1)
-    X_sca = df[SCALAR_COLS].to_numpy(dtype=np.float32)
+    X_seq = X_seq.reshape(-1, actual_lookback, 1)
+    X_sca = df[scalar_cols].to_numpy(dtype=np.float32)
     # Normalize scalars (per-column zscore, robust to outliers).
     sca_mean = X_sca.mean(axis=0, keepdims=True)
     sca_std = X_sca.std(axis=0, keepdims=True) + 1e-6
@@ -126,7 +147,7 @@ def main() -> int:
             z = torch.cat([last, scalars], dim=-1)
             return self.head(z).squeeze(-1)
 
-    model = LSTMHead(len(SCALAR_COLS), args.hidden, args.layers).to(device)
+    model = LSTMHead(len(scalar_cols), args.hidden, args.layers).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
     bce = nn.BCEWithLogitsLoss()
     scaler = torch.amp.GradScaler("cuda", enabled=(device == "cuda"))
@@ -184,8 +205,9 @@ def main() -> int:
                 "args": vars(args),
                 "sca_mean": sca_mean,
                 "sca_std": sca_std,
-                "scalar_cols": SCALAR_COLS,
+                "scalar_cols": scalar_cols,
                 "price_cols": price_cols,
+                "lookback": actual_lookback,
             }, args.out)
             print(f"  saved checkpoint → {args.out}", flush=True)
         else:
