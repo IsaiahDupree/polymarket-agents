@@ -76,7 +76,14 @@ export const DEFAULT_SAFETY_CEILING: ReadonlySet<string> = new Set([
   "poly_arbitrage_set",
   "poly_repricing",
   "poly_directional_arb_tilt",
-  "poly_near_resolution",
+  // poly_near_resolution removed from safety ceiling 2026-06-05. Empirically
+  // produced a cohort of 80-90 % win-rate agents that all bled capital — the
+  // strategy buys the favorite at ~0.95 and wins $0.05 per share, losing
+  // $0.95 on the 1-in-10. Negative EV by construction; keeping it out of
+  // live promotion eligibility regardless of paper performance. Set
+  // ARENA_AUTO_PROMOTE_LIVE_KINDS in env to override if the failure mode
+  // is later confirmed mitigated.
+  // "poly_near_resolution",
 ]);
 
 export type EligibilityDecision = {

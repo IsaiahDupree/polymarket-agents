@@ -21,6 +21,7 @@
 import "./_env.ts";
 import { db } from "../src/lib/db/client.ts";
 import { insertEvolutionEvent } from "../src/lib/db/queries.ts";
+import { recordHeartbeat } from "../src/lib/heartbeat.ts";
 import {
   sharpe, median, deflatedSharpe, pbo, multiFoldWalkForward, hardenVerdict,
   type Variant,
@@ -192,6 +193,37 @@ function main(): void {
   } catch (err) {
     console.error(`[audit-overfit] failed to log: ${(err as Error).message}`);
   }
+
+  // Persist a typed row so the dashboard can plot trends. Different from
+  // the evolution_log entry above (which is the operator-facing audit
+  // event) — this is the structured time series.
+  try {
+    db().prepare(`
+      INSERT INTO overfit_verdicts
+        (scope, n_agents, n_trades, pbo, dsr, median_oos, hardened, details_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      "global",
+      variants.length,
+      variants.reduce((acc, v) => acc + v.returns.filter((r) => r !== 0).length, 0),
+      verdict.pbo,
+      verdict.dsr,
+      verdict.medianOos,
+      verdict.hardened ? 1 : 0,
+      JSON.stringify(summary),
+    );
+  } catch (err) {
+    console.error(`[audit-overfit] failed to persist verdict row: ${(err as Error).message}`);
+  }
+
+  // Heartbeat so supervisor knows when this last ran.
+  recordHeartbeat("audit-overfit", {
+    cohort_size: variants.length,
+    pbo: verdict.pbo,
+    dsr: verdict.dsr,
+    median_oos: verdict.medianOos,
+    hardened: verdict.hardened,
+  });
 }
 
 main();

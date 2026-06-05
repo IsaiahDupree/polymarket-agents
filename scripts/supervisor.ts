@@ -38,6 +38,8 @@ const RECOVERY_COMMANDS: Partial<Record<SubsystemName, { script: string; descrip
   "snapshot-evolution": { script: "snapshot:evolution", description: "Capture evolution-state snapshot" },
   "portfolio-snapshot": { script: "worker:portfolio-snapshot", description: "Capture portfolio PnL snapshot" },
   reconcile: { script: "worker:reconcile", description: "Reconcile capsule + venue state" },
+  // Daily overfit verdict — re-run when last record is >24h old. Cheap (~5s).
+  "audit-overfit": { script: "audit:overfit", description: "Recompute PBO/DSR/walk-forward verdict" },
 };
 
 async function runNpmScript(script: string, timeoutMs = 5 * 60_000): Promise<{ ok: boolean; exitCode: number; durationMs: number }> {

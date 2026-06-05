@@ -20,7 +20,10 @@ export type SubsystemName =
   | "reconcile"
   | "ws-realtime"
   | "late-scalp-observer"
-  | "supervisor";
+  | "supervisor"
+  | "audit-overfit"
+  | "book-snapshot"
+  | "updown-discovery";
 
 export type HeartbeatStatus = {
   subsystem: SubsystemName;
@@ -56,6 +59,13 @@ export const DEFAULT_STALE_THRESHOLDS: Record<SubsystemName, number> = {
   // is informational only (Task Scheduler's supervised wrapper restarts it).
   "late-scalp-observer": 10,
   supervisor: 30,
+  // Audit runs once per day → 28h stale (1h grace for scheduler drift).
+  "audit-overfit": 28 * 60,
+  // Book-snapshot worker writes a heartbeat each cycle (1s cadence). 10min
+  // stale flags a dead process the same way ws-realtime does.
+  "book-snapshot": 10,
+  // Discovery scans every 60s → 10min stale.
+  "updown-discovery": 10,
 };
 
 /**

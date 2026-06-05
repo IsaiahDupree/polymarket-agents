@@ -247,6 +247,64 @@ function runLightMigrations(handle: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_apicache_query
       ON api_call_cache(endpoint, query_string) WHERE query_string IS NOT NULL;
   `);
+
+  // 2026-05-31: book_snapshots — fast-cadence (1s) CLOB top-of-book captures.
+  // Drives the Cont-Kukanov-Stoikov OFI calculator at decide time: the
+  // microstructure module reads the most recent N snapshots for a token
+  // and computes order-flow imbalance directly from level-1 changes.
+  //
+  // Why a separate table from api_call_cache: that one stores raw response
+  // bodies for general replay. This one stores derived top-of-book numbers
+  // for hot decide-time lookups — strategies need O(1) "give me the last
+  // 30 seconds of bid/ask for token X", which a typed columnar table
+  // serves much faster than parsing JSON bodies on every call.
+  //
+  // Retention: pruned aggressively (default 24h) — OFI strategies care
+  // only about the last few seconds; the api_call_cache keeps the long
+  // tail for backtesting.
+  handle.exec(`
+    CREATE TABLE IF NOT EXISTS book_snapshots (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      token_id        TEXT NOT NULL,
+      ts_unix_ms      INTEGER NOT NULL,        -- wall clock in ms when the poll returned
+      bid_price       REAL,                    -- best bid; null when book empty on bid side
+      bid_size        REAL,
+      ask_price       REAL,                    -- best ask; null when book empty on ask side
+      ask_size        REAL,
+      midpoint        REAL,                    -- (bid+ask)/2 when both sides present
+      spread          REAL,                    -- ask - bid (only when both present)
+      total_bid_depth REAL,                    -- sum of top-N bid sizes from raw book
+      total_ask_depth REAL,
+      n_bid_levels    INTEGER,
+      n_ask_levels    INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_book_snap_token_time
+      ON book_snapshots(token_id, ts_unix_ms DESC);
+    CREATE INDEX IF NOT EXISTS idx_book_snap_time
+      ON book_snapshots(ts_unix_ms);
+  `);
+
+  // 2026-05-31: overfit_verdicts — daily output of the audit:overfit run.
+  // Each row captures a single cohort × snapshot, persisting the hardenVerdict
+  // composite gate (PBO, DSR, median OOS) so the operator dashboard can show
+  // trend lines instead of just the latest CLI output. The "scope" column
+  // narrows to a specific (kind, asset) when we run per-bucket audits.
+  handle.exec(`
+    CREATE TABLE IF NOT EXISTS overfit_verdicts (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts_iso          TEXT NOT NULL DEFAULT (datetime('now')),
+      scope           TEXT NOT NULL DEFAULT 'global',   -- 'global' | 'kind:markov_persistence' | 'kind:markov_persistence:BTC' etc.
+      n_agents        INTEGER NOT NULL,
+      n_trades        INTEGER NOT NULL,
+      pbo             REAL,                              -- López de Prado probability of backtest overfit
+      dsr             REAL,                              -- Bailey-LdP deflated Sharpe (probability form)
+      median_oos      REAL,                              -- median out-of-sample return across folds
+      hardened        INTEGER NOT NULL DEFAULT 0,        -- 1 = passes the composite gate
+      details_json    TEXT NOT NULL DEFAULT '{}'         -- full verdict payload for drill-down
+    );
+    CREATE INDEX IF NOT EXISTS idx_overfit_scope_time
+      ON overfit_verdicts(scope, ts_iso DESC);
+  `);
 }
 
 export function closeDb() {

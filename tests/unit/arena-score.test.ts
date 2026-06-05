@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DD_PENALTY,
   WINRATE_DD_PENALTY,
+  WINRATE_LOSER_SENTINEL,
   WINRATE_UNRANKED_SENTINEL,
   partitionSurvivors,
   rankAgents,
@@ -196,5 +197,63 @@ describe("scoreAgent — winrate mode", () => {
     const s = scoreAgent(a);
     const expected = (18 / 20) * Math.log1p(20) * 1.05;
     expect(s.fitness).toBeCloseTo(expected, 4);
+  });
+
+  // ── HARD CUTOFF for negative P&L (added 2026-06-05) ─────────────────────
+  // The poly_near_resolution failure mode: 90 % wr agents with negative P&L
+  // were outranking profitable 60 % wr agents because the (1 + pnl_pct) term
+  // was too weak. The cutoff sends every losing agent below every profit one.
+
+  it("losing high-win-rate agent ranks BELOW profitable lower-win-rate agent", () => {
+    // The exact failure mode observed 2026-06-05:
+    //   - 90.6 % wr, 32 trades, pnl_pct = -0.139 → CUR fitness = +2.412 (TOP!)
+    //   - 60.4 % wr, 48 trades, pnl_pct = +0.017 → CUR fitness = +1.438 (below)
+    // After the cutoff fix, the losing agent goes deep negative and the
+    // profitable agent wins.
+    const losingHighWr = agent({
+      id: 1, trades_count: 32, wins_count: 29,        // 90.6 % wr
+      cash_usd_current: 861, peak_equity_usd: 1000,   // pnl_pct = -0.139
+    });
+    const profitableLowerWr = agent({
+      id: 2, trades_count: 48, wins_count: 29,        // 60.4 % wr
+      cash_usd_current: 1017, peak_equity_usd: 1017,  // pnl_pct = +0.017
+    });
+    const losingFitness = scoreAgent(losingHighWr).fitness;
+    const profitableFitness = scoreAgent(profitableLowerWr).fitness;
+    expect(profitableFitness).toBeGreaterThan(losingFitness);
+    expect(losingFitness).toBeLessThan(WINRATE_LOSER_SENTINEL + 1);
+    expect(profitableFitness).toBeGreaterThan(0);
+  });
+
+  it("losing agents are ordered by pnl_pct: mild loser ranks above catastrophic loser", () => {
+    // From the live data: 90.6 % wr -$96 (pnl -13.9 %) vs 84.4 % wr -$811 (pnl -84 %).
+    // Among losers, the milder loss should rank higher.
+    const mildLoss = agent({ id: 1, trades_count: 32, wins_count: 29, cash_usd_current: 861 });
+    const catLoss  = agent({ id: 2, trades_count: 224, wins_count: 189, cash_usd_current: 156 });
+    expect(scoreAgent(mildLoss).fitness).toBeGreaterThan(scoreAgent(catLoss).fitness);
+  });
+
+  it("losing agent (pnl_pct < 0) ranks BELOW the data-starved sentinel", () => {
+    // A known loser is worse than an unknown newcomer.
+    // Newcomer: 3 trades, 100 % win rate, profitable → data-starved sentinel.
+    // Loser: 30 trades, 90 % win rate, but pnl_pct < 0 → loser sentinel.
+    const newcomer = agent({ id: 1, trades_count: 3, wins_count: 3, cash_usd_current: 1050 });
+    const knownLoser = agent({ id: 2, trades_count: 30, wins_count: 27, cash_usd_current: 900 });
+    expect(scoreAgent(newcomer).fitness).toBeGreaterThan(scoreAgent(knownLoser).fitness);
+  });
+
+  it("pnl_pct = 0 (break-even) does NOT trigger the loser cutoff", () => {
+    // Edge case: exactly break-even agent should use the normal formula,
+    // not the loser sentinel. (1 + 0) = 1.0 so fitness = win_rate² · log1p(n).
+    const breakEven = agent({ trades_count: 20, wins_count: 18, cash_usd_current: 1000 });
+    const s = scoreAgent(breakEven);
+    expect(s.fitness).toBeCloseTo(Math.pow(0.9, 2) * Math.log1p(20), 4);
+    expect(s.fitness).toBeGreaterThan(0);
+  });
+
+  it("pnl_pct = -0.001 (barely negative) DOES trigger the cutoff (strict <0)", () => {
+    const barelyNegative = agent({ trades_count: 20, wins_count: 18, cash_usd_current: 999 });
+    const s = scoreAgent(barelyNegative);
+    expect(s.fitness).toBeLessThan(WINRATE_LOSER_SENTINEL + 1);
   });
 });

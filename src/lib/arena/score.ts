@@ -7,14 +7,25 @@
  *   consistently win on real trade samples instead of optimising for one
  *   home-run trade per generation. Formula:
  *
- *     fitness = win_rate^POWER · log1p(trades_count) · (1 + pnl_pct)
- *               − WINRATE_DD_PENALTY × max_dd_pct
+ *     IF pnl_pct < 0:
+ *        fitness = WINRATE_LOSER_SENTINEL + pnl_pct           (HARD CUTOFF)
+ *     ELSE:
+ *        fitness = win_rate^POWER · log1p(trades_count) · (1 + pnl_pct)
+ *                  − WINRATE_DD_PENALTY × max_dd_pct
  *
  *   The win_rate term is RAISED TO A POWER (default 2) so the survival
  *   gradient steepens hard near 1.0 — a 90 % winner outscores a 60 %
  *   winner by 2.25×, not 1.5×. This is what biases evolution toward the
  *   user's "90 %+ win rate" target instead of settling for "profitable
  *   coin-flippers".
+ *
+ *   The hard cutoff for pnl_pct < 0 was added 2026-06-05. Without it
+ *   the (1 + pnl_pct) term was too weak: a 10 % loss only knocked
+ *   fitness down 10 %, which win_rate² easily overcame. The factory
+ *   evolved 80-90 % win-rate `poly_near_resolution` scalpers that all
+ *   bled capital — the strategy buys the favorite at 0.95 (wins $0.05
+ *   per share) and loses $0.95 on the 1-in-10. With the cutoff, any
+ *   negative-P&L agent gets sentinelled below every profitable agent.
  *
  *   The three multiplicative terms encode the three goals:
  *     - win_rate^POWER         — quality (the "90 %+ win" target, dominant)
@@ -53,6 +64,24 @@ export const WINRATE_DD_PENALTY = 0.5;
  * themselves (newer agents drift up as they accumulate trades).
  */
 export const WINRATE_UNRANKED_SENTINEL = -1_000_000;
+/**
+ * Sentinel for fully-tested agents whose pnl_pct is *negative*. Forced
+ * below every profitable agent (and below WINRATE_UNRANKED_SENTINEL, so
+ * data-starved newcomers also outrank known losers — an unknown agent
+ * may yet become profitable, but a known loser will not). Tiebreaker is
+ * `+ pnl_pct` so a barely-negative agent (pnl_pct = -0.01) outranks a
+ * catastrophic one (pnl_pct = -0.84).
+ *
+ * Added 2026-06-05 after observing the failure mode it fixes:
+ * `poly_near_resolution` evolved a cohort of 80-90 % win-rate agents that
+ * were all bleeding capital (best: 90.6 % wr, −$96 over 32 trades). The
+ * `(1 + pnl_pct)` term in the regular formula only scaled fitness down
+ * by ~10 % for a 10 % loss — `win_rate^2` easily overcame it, so
+ * evolution kept selecting for negative-EV scalpers. A hard cutoff fixes
+ * the contract: you don't get ranked as a survivor unless your P&L is
+ * non-negative.
+ */
+export const WINRATE_LOSER_SENTINEL = -2_000_000;
 /**
  * Activity bonus — rewards agents who *act*, breaks ties in favor of trading
  * over hold-forever. Capped so a spam-clicking agent can't dominate purely on
@@ -139,6 +168,14 @@ export function scoreAgent(a: PaperAgentRow): Score {
       // Sentinel: rank below every fully-tested agent. Add trades_count so
       // newer agents drift up as they accumulate data instead of all tying.
       fitness = WINRATE_UNRANKED_SENTINEL + a.trades_count - max_dd_pct;
+    } else if (pnl_pct < 0) {
+      // Hard P&L cutoff: a fully-tested agent that has *lost money* gets
+      // ranked below every profitable agent regardless of win rate. The
+      // tiebreaker among losers is pnl_pct — closer to zero ranks higher.
+      // This is the fix for the poly_near_resolution failure mode where
+      // 90 %+ win-rate agents kept winning generations while bleeding
+      // capital (small-favorite scalpers losing $0.95 on the 1-in-10).
+      fitness = WINRATE_LOSER_SENTINEL + pnl_pct;
     } else {
       fitness =
         Math.pow(win_rate, winratePower) * Math.log1p(a.trades_count) * (1 + pnl_pct)

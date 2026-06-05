@@ -52,7 +52,7 @@ const GROUPS: NavGroup[] = [
   },
   {
     label: "Manage",
-    matches: ["/agents", "/strategies", "/trades", "/research", "/articles", "/evolution", "/settings"],
+    matches: ["/agents", "/strategies", "/trades", "/research", "/articles", "/evolution", "/quality", "/settings"],
     items: [
       { href: "/agents", label: "Agents", description: "Charters + risk budgets" },
       { href: "/strategies", label: "Strategies", description: "Versioned specs" },
@@ -60,6 +60,7 @@ const GROUPS: NavGroup[] = [
       { href: "/articles", label: "Article triage ★", description: "Twitter threads → gap report → develop one at a time" },
       { href: "/research", label: "Research notes", description: "Theses + sources" },
       { href: "/evolution", label: "Evolution log", description: "Append-only event stream" },
+      { href: "/quality", label: "Quality & cache ★", description: "Overfit verdict + API cache stats + per-(kind, asset) blacklist" },
       { href: "/settings", label: "Settings + state ★", description: "Thresholds, heartbeats, learnings, cheat-sheet" },
     ],
   },
