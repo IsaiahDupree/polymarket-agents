@@ -11,6 +11,7 @@ import json
 import sqlite3
 import sys
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -120,14 +121,35 @@ def insert_cache_row(conn: sqlite3.Connection, *, slug: str, body: str,
 def insert_binary(conn: sqlite3.Connection, *, slug: str, expiry_iso: str,
                   outcome_yes: int = 1, settled: int = 1,
                   question: str = "BTC Up or Down", asset: str = "BTC",
-                  duration_kind: str = "5M") -> None:
+                  duration_kind: str = "5M",
+                  yes_token: Optional[str] = None,
+                  no_token: Optional[str] = None) -> None:
     conn.execute(
         """INSERT INTO poly_binaries
-           (token_id, condition_id, question, asset, duration_kind, expiry_iso,
+           (token_id, no_token_id, condition_id, question, asset, duration_kind, expiry_iso,
             settled, outcome_yes, event_slug)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (f"tok-{slug}", f"0xcond-{slug}", question, asset, duration_kind,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (yes_token or f"tok-yes-{slug}", no_token or f"tok-no-{slug}",
+         f"0xcond-{slug}", question, asset, duration_kind,
          expiry_iso, settled, outcome_yes, slug),
+    )
+
+
+def insert_book_snapshot(conn: sqlite3.Connection, *, token_id: str,
+                          ts_unix_ms: int, bid_price: float, bid_size: float,
+                          ask_price: float, ask_size: float,
+                          total_bid_depth: float = 0.0,
+                          total_ask_depth: float = 0.0) -> None:
+    """Add a book_snapshots row for OFI / book-feature tests."""
+    midpoint = (bid_price + ask_price) / 2
+    spread = ask_price - bid_price
+    conn.execute(
+        """INSERT INTO book_snapshots
+           (token_id, ts_unix_ms, bid_price, bid_size, ask_price, ask_size,
+            midpoint, spread, total_bid_depth, total_ask_depth, n_bid_levels, n_ask_levels)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1)""",
+        (token_id, ts_unix_ms, bid_price, bid_size, ask_price, ask_size,
+         midpoint, spread, total_bid_depth, total_ask_depth),
     )
 
 

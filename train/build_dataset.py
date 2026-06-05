@@ -203,37 +203,85 @@ def label_for_slug(conn: sqlite3.Connection, slug: str) -> Optional[int]:
     return cache.get(slug)
 
 
+def tokenid_for_slug(conn: sqlite3.Connection, slug: str) -> tuple[Optional[str], Optional[str]]:
+    """(yes_token_id, no_token_id) for a slug — or (None, None) when the
+    slug isn't in poly_binaries. Memoized the same way label_for_slug is.
+    Token IDs are needed to join book_snapshots for the OFI feature.
+    """
+    cache = getattr(tokenid_for_slug, "_cache", None)
+    if cache is None:
+        cache = {}
+        for ev_slug, yes_tok, no_tok in conn.execute(
+            "SELECT event_slug, token_id, no_token_id FROM poly_binaries "
+            "WHERE event_slug IS NOT NULL"
+        ):
+            cache[ev_slug] = (yes_tok, no_tok)
+        setattr(tokenid_for_slug, "_cache", cache)
+    return cache.get(slug, (None, None))
+
+
 def book_features_at(
     conn: sqlite3.Connection, token_id: Optional[str], decision_ms: int
 ) -> dict:
-    """Pull the most recent book snapshot ≤ decision_ms. Returns zeros when
-    no book data is available (which is fine — pre-book-worker history)."""
+    """Compute book-derived features at a decision time:
+      - total_bid_depth / total_ask_depth / spread  (instantaneous snapshot)
+      - ofi_1s / ofi_5s / ofi_30s                   (rolling-window Cont-Kukanov-Stoikov OFI)
+
+    Returns all-zero dict when no book data is available for that token
+    (e.g., historical binaries that settled before the book-snapshot
+    worker started running).
+    """
+    from quant_ofi import OFICalculator, TopOfBookSample, run_ofi_over_history
+
     empty = {
         "ofi_1s": 0.0, "ofi_5s": 0.0, "ofi_30s": 0.0,
         "total_bid_depth": 0.0, "total_ask_depth": 0.0, "spread": 0.0,
     }
     if not token_id:
         return empty
-    # Just return depths + spread for now; OFI computation requires the
-    # rolling-event calculator which is a separate port. Punt to a Phase-B
-    # feature add.
-    row = conn.execute(
+
+    # Pull the rolling window of book snapshots ending at decision_ms.
+    # 30s window covers the longest OFI variant; sub-windows are computed
+    # by replaying through OFICalculator instances with smaller window_sec.
+    rows = conn.execute(
         """
-        SELECT total_bid_depth, total_ask_depth, spread
+        SELECT ts_unix_ms, bid_price, bid_size, ask_price, ask_size,
+               total_bid_depth, total_ask_depth, spread
           FROM book_snapshots
          WHERE token_id = ?
            AND ts_unix_ms <= ?
-         ORDER BY ts_unix_ms DESC
-         LIMIT 1
+           AND ts_unix_ms >= ?
+         ORDER BY ts_unix_ms ASC
         """,
-        (token_id, decision_ms),
-    ).fetchone()
-    if row is None:
+        (token_id, decision_ms, decision_ms - 30_000),
+    ).fetchall()
+
+    if not rows:
         return empty
+
+    # Snapshot features come from the freshest row in the window.
+    last = rows[-1]
     out = dict(empty)
-    out["total_bid_depth"] = float(row[0] or 0)
-    out["total_ask_depth"] = float(row[1] or 0)
-    out["spread"] = float(row[2] or 0)
+    out["total_bid_depth"] = float(last[5] or 0)
+    out["total_ask_depth"] = float(last[6] or 0)
+    out["spread"] = float(last[7] or 0)
+
+    # OFI features — only usable rows are those with BOTH sides quoted.
+    samples = []
+    for r in rows:
+        bid_px, bid_sz, ask_px, ask_sz = r[1], r[2], r[3], r[4]
+        if bid_px is None or ask_px is None or bid_sz is None or ask_sz is None:
+            continue
+        samples.append(TopOfBookSample(
+            ts=r[0] / 1000.0,
+            bid_px=float(bid_px), bid_sz=float(bid_sz),
+            ask_px=float(ask_px), ask_sz=float(ask_sz),
+        ))
+    if len(samples) < 2:
+        return out
+    out["ofi_1s"] = run_ofi_over_history(samples, window_sec=1.0)
+    out["ofi_5s"] = run_ofi_over_history(samples, window_sec=5.0)
+    out["ofi_30s"] = run_ofi_over_history(samples, window_sec=30.0)
     return out
 
 
@@ -261,12 +309,18 @@ def build_rows(
         return []
     asset, recurrence = slug_meta(slug)
     label = label_for_slug(conn, slug)
+    yes_tok, _no_tok = tokenid_for_slug(conn, slug)
     out: list[dict] = []
     for i in range(history_lookback, len(traj)):
         cur = traj[i]
         dec_unix = iso_to_unix(cur.fetched_at) or 0.0
         min_to_res = ((end_unix - dec_unix) / 60.0) if end_unix else None
         window = [traj[j].yes_price for j in range(i - history_lookback, i)]
+        # Pull OFI + book-snapshot features for the YES token at decision time.
+        # Most historical binaries have no book data (worker started 2026-05-31),
+        # so book_features_at returns all-zeros — that's the expected sparse
+        # feature pattern, not an error.
+        book = book_features_at(conn, yes_tok, int(dec_unix * 1000))
         row = {
             "slug": slug,
             "asset": asset,
@@ -278,6 +332,12 @@ def build_rows(
             "no_price": cur.no_price,
             "volume_usd": cur.volume_usd,
             "liquidity_usd": cur.liquidity_usd,
+            "total_bid_depth": book["total_bid_depth"],
+            "total_ask_depth": book["total_ask_depth"],
+            "spread": book["spread"],
+            "ofi_1s": book["ofi_1s"],
+            "ofi_5s": book["ofi_5s"],
+            "ofi_30s": book["ofi_30s"],
             "label_resolved_yes": label,
         }
         # price_window_-10 .. price_window_-1

@@ -40,6 +40,7 @@ HISTORY_LOOKBACK = 10
 SCALAR_COLS = [
     "yes_price", "volume_usd", "liquidity_usd",
     "min_to_resolution", "total_bid_depth", "total_ask_depth", "spread",
+    "ofi_1s", "ofi_5s", "ofi_30s",
 ]
 
 
