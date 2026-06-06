@@ -55,6 +55,10 @@ def main() -> int:
     ap.add_argument("--layers", type=int, default=2)
     ap.add_argument("--val-split", type=float, default=0.2)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--asset", default=None,
+                    help="Filter dataset to one asset (BTC/ETH/SOL/XRP/DOGE).")
+    ap.add_argument("--filter-ofi-only", action="store_true",
+                    help="Keep only rows whose ofi_30s != 0 (book-covered).")
     args = ap.parse_args()
 
     try:
@@ -77,8 +81,17 @@ def main() -> int:
     df = pd.read_parquet(args.data)
     df = df.dropna(subset=["label_resolved_yes"]).copy()
     print(f"loaded {len(df)} labeled rows", flush=True)
+    if args.asset:
+        df = df[df["asset"] == args.asset].copy()
+        print(f"  after asset={args.asset} filter: {len(df)}", flush=True)
+    if args.filter_ofi_only:
+        if "ofi_30s" not in df.columns:
+            print("FAIL: --filter-ofi-only requested but parquet has no ofi_30s column.", flush=True)
+            return 1
+        df = df[df["ofi_30s"] != 0].copy()
+        print(f"  after OFI-only filter: {len(df)}", flush=True)
     if len(df) < 200:
-        print("FAIL: fewer than 200 labeled rows — wait for more binaries to settle.", flush=True)
+        print("FAIL: fewer than 200 labeled rows after filters — wait or relax filters.", flush=True)
         return 1
 
     # Auto-detect lookback from parquet columns. Dataset builder defaults to 10
