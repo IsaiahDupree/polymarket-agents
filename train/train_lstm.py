@@ -59,6 +59,9 @@ def main() -> int:
                     help="Filter dataset to one asset (BTC/ETH/SOL/XRP/DOGE).")
     ap.add_argument("--filter-ofi-only", action="store_true",
                     help="Keep only rows whose ofi_30s != 0 (book-covered).")
+    ap.add_argument("--class-weighted", action="store_true",
+                    help="Use class-balanced BCE loss (pos_weight = "
+                         "n_neg/n_pos). Fixes regime-bias fold instability.")
     args = ap.parse_args()
 
     try:
@@ -163,7 +166,20 @@ def main() -> int:
 
     model = LSTMHead(len(scalar_cols), args.hidden, args.layers).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
-    bce = nn.BCEWithLogitsLoss()
+    if args.class_weighted:
+        # pos_weight scales the BCE loss for the positive class so an
+        # imbalanced training set doesn't push the model toward the
+        # majority class. Computed once over the training split only —
+        # the held-out val split sees the un-reweighted loss for fair
+        # comparison.
+        n_pos = float((y[tr] == 1).sum())
+        n_neg = float((y[tr] == 0).sum())
+        pos_weight = torch.tensor([n_neg / max(1.0, n_pos)], device=device)
+        bce = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+        print(f"class-weighted BCE: pos_weight={pos_weight.item():.3f} (n_pos={int(n_pos)}, n_neg={int(n_neg)})", flush=True)
+    else:
+        bce = nn.BCEWithLogitsLoss()
+    bce_val = nn.BCEWithLogitsLoss()  # un-weighted for val loss reporting
     scaler = torch.amp.GradScaler("cuda", enabled=(device == "cuda"))
 
     best_val = math.inf
@@ -195,7 +211,7 @@ def main() -> int:
         with torch.no_grad():
             for seq, sca, label in va_loader:
                 logits = model(seq, sca)
-                loss = bce(logits, label)
+                loss = bce_val(logits, label)
                 va_loss += loss.item() * label.size(0)
                 n_va += label.size(0)
                 probs.extend(torch.sigmoid(logits).cpu().tolist())

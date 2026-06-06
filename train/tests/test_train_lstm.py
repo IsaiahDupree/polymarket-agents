@@ -115,6 +115,26 @@ class TestSyntheticTraining:
         finally:
             sys.argv = argv_save
 
+    def test_trainer_class_weighted_runs_and_saves(self, tmp_path):
+        """--class-weighted should not crash and should produce a checkpoint
+        with the same structure as the default loss."""
+        p = tmp_path / "synth.parquet"
+        out = tmp_path / "cw.pt"
+        _make_synthetic_parquet(p, n_rows=400, seed=7)
+        import sys
+        import train_lstm
+        argv_save = sys.argv
+        try:
+            sys.argv = ["train_lstm.py", "--data", str(p), "--out", str(out),
+                        "--epochs", "2", "--batch", "32", "--class-weighted"]
+            rc = train_lstm.main()
+            assert rc == 0
+        finally:
+            sys.argv = argv_save
+        assert out.exists()
+        ckpt = torch.load(out, weights_only=False, map_location="cpu")
+        assert "model_state" in ckpt and "scalar_cols" in ckpt
+
 
 @pytest.mark.skipif(not torch.cuda.is_available(),
                     reason="CUDA not available — skipping GPU-specific test")
