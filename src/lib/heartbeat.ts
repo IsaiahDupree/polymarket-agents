@@ -23,7 +23,8 @@ export type SubsystemName =
   | "supervisor"
   | "audit-overfit"
   | "book-snapshot"
-  | "updown-discovery";
+  | "updown-discovery"
+  | "gpu-oracle";
 
 export type HeartbeatStatus = {
   subsystem: SubsystemName;
@@ -66,6 +67,9 @@ export const DEFAULT_STALE_THRESHOLDS: Record<SubsystemName, number> = {
   "book-snapshot": 10,
   // Discovery scans every 60s → 10min stale.
   "updown-discovery": 10,
+  // gpu-oracle worker writes a heartbeat per cycle (default 30s cadence).
+  // 5min stale threshold = ~10 missed cycles → process is dead.
+  "gpu-oracle": 5,
 };
 
 /**

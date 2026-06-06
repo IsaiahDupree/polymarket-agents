@@ -206,7 +206,7 @@ async function pass(): Promise<void> {
       console.warn(`[gpu-oracle] ${b.event_slug ?? b.token_id} failed: ${(e as Error).message.slice(0, 120)}`);
     }
   }
-  recordHeartbeat("gpu-oracle" as any /* extend SubsystemName when promoting */, {
+  recordHeartbeat("gpu-oracle", {
     binaries: binaries.length, predicted, skipped, errored,
   });
   console.log(`[gpu-oracle] cycle: binaries=${binaries.length} predicted=${predicted} skipped=${skipped} err=${errored} ${Date.now() - t0}ms`);
