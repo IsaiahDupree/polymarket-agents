@@ -62,6 +62,12 @@ def main() -> int:
     ap.add_argument("--class-weighted", action="store_true",
                     help="Use class-balanced BCE loss (pos_weight = "
                          "n_neg/n_pos). Fixes regime-bias fold instability.")
+    ap.add_argument("--time-stratified-split", action="store_true",
+                    help="Split val by sampling within each chronological "
+                         "block instead of randomly across the dataset. "
+                         "Ensures train + val see the same temporal regimes; "
+                         "fixes the symptom where val is dominated by one "
+                         "time window the model never trained on.")
     args = ap.parse_args()
 
     try:
@@ -133,9 +139,29 @@ def main() -> int:
     y = df["label_resolved_yes"].to_numpy(dtype=np.float32)
 
     n = len(df)
-    idx = np.random.permutation(n)
-    cut = int(n * (1 - args.val_split))
-    tr, va = idx[:cut], idx[cut:]
+    if args.time_stratified_split:
+        # Sort by decision_ts so chronological order is canonical, then
+        # take every K-th row for val (K = round(1/val_split)). This
+        # interleaves train + val across the entire time axis so the
+        # model never sees a val window from a regime it didn't train on.
+        if "decision_ts" not in df.columns:
+            print("FAIL: --time-stratified-split needs decision_ts column.", flush=True)
+            return 1
+        df = df.sort_values("decision_ts", kind="stable").reset_index(drop=True)
+        # Recompute features from the now-sorted df
+        X_seq = df[price_cols].to_numpy(dtype=np.float32).reshape(-1, actual_lookback, 1)
+        X_sca = (df[scalar_cols].to_numpy(dtype=np.float32) - sca_mean) / sca_std
+        y = df["label_resolved_yes"].to_numpy(dtype=np.float32)
+        # Stride sampling: pick every K-th row for val
+        K = max(2, int(round(1 / args.val_split)))
+        all_idx = np.arange(n)
+        va = all_idx[K - 1::K]  # offset so val rows don't coincide with row 0
+        tr = np.setdiff1d(all_idx, va, assume_unique=True)
+        print(f"time-stratified split: K={K} → train={len(tr)} val={len(va)}", flush=True)
+    else:
+        idx = np.random.permutation(n)
+        cut = int(n * (1 - args.val_split))
+        tr, va = idx[:cut], idx[cut:]
 
     def make_loader(idx_split, shuffle):
         ds = TensorDataset(

@@ -135,6 +135,30 @@ class TestSyntheticTraining:
         ckpt = torch.load(out, weights_only=False, map_location="cpu")
         assert "model_state" in ckpt and "scalar_cols" in ckpt
 
+    def test_trainer_time_stratified_split_runs(self, tmp_path):
+        """--time-stratified-split should interleave train/val rows along
+        decision_ts so no time window is val-only."""
+        p = tmp_path / "synth.parquet"
+        out = tmp_path / "ts.pt"
+        _make_synthetic_parquet(p, n_rows=400, seed=11)
+        # Synthetic data needs a decision_ts column for time-stratified.
+        df = pd.read_parquet(p)
+        df["decision_ts"] = pd.date_range("2026-01-01", periods=len(df),
+                                            freq="1min").strftime("%Y-%m-%d %H:%M:%S")
+        df.to_parquet(p, index=False)
+        import sys
+        import train_lstm
+        argv_save = sys.argv
+        try:
+            sys.argv = ["train_lstm.py", "--data", str(p), "--out", str(out),
+                        "--epochs", "2", "--batch", "32",
+                        "--time-stratified-split"]
+            rc = train_lstm.main()
+            assert rc == 0
+        finally:
+            sys.argv = argv_save
+        assert out.exists()
+
 
 @pytest.mark.skipif(not torch.cuda.is_available(),
                     reason="CUDA not available — skipping GPU-specific test")
