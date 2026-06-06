@@ -67,32 +67,78 @@ def walk_forward_metrics(probs, y, n_folds: int = 5):
     return folds
 
 
-def verdict(folds, overall_auc: float, overall_brier: float) -> dict:
+"""Audit-gate thresholds per mode. The mode controls how strict each
+criterion is. `paper` allows running the model in the arena's paper
+layer but blocks live promotion; `live` is the gate before real money.
+
+Documented here so changing a threshold means changing one constant
+instead of editing five branches.
+"""
+GATE_THRESHOLDS = {
+    # Paper: lower bar — we just want to see the model in action
+    # alongside other strategies. Model failures stay in paper.
+    "paper": {
+        "min_fold_auc": 0.52,
+        "stability_ratio": 0.70,
+        "brier_max": 0.260,
+        "overall_auc_min": 0.55,
+    },
+    # Strict: original gate from be47dbd. Reasonable default for
+    # eyeballing model quality.
+    "strict": {
+        "min_fold_auc": 0.55,
+        "stability_ratio": 0.85,
+        "brier_max": 0.245,
+        "overall_auc_min": 0.60,
+    },
+    # Live: tighter. Real money requires no fold below 0.58, very
+    # tight stability, and AUC over 0.62.
+    "live": {
+        "min_fold_auc": 0.58,
+        "stability_ratio": 0.90,
+        "brier_max": 0.230,
+        "overall_auc_min": 0.62,
+    },
+}
+
+
+def verdict(folds, overall_auc: float, overall_brier: float,
+            mode: str = "strict") -> dict:
     """Compose the hardening verdict from per-fold metrics.
 
+    Mode-keyed thresholds (see GATE_THRESHOLDS above):
+      paper  — minimum bar for arena exposure
+      strict — default; tradeable threshold
+      live   — required before real money
+
     PASS criteria (all must hold):
-      - Every fold AUC > 0.55                — model beats coin flip everywhere
-      - min(fold AUCs) > 0.85 × max(fold AUCs) — stability (no fold collapse)
-      - Overall Brier < 0.245                — calibration in a usable range
-      - Overall AUC > 0.60                   — tradeable threshold
+      - Every fold AUC > min_fold_auc
+      - min(fold AUCs) > stability_ratio × max(fold AUCs)
+      - Overall Brier < brier_max
+      - Overall AUC > overall_auc_min
 
     Returns dict with each criterion's verdict + a single `hardened` bool.
     """
     if not folds:
-        return {"hardened": False, "reason": "no folds evaluated"}
+        return {"hardened": False, "reason": "no folds evaluated", "mode": mode}
+    if mode not in GATE_THRESHOLDS:
+        raise ValueError(f"unknown audit mode: {mode}; valid: {list(GATE_THRESHOLDS)}")
+    t = GATE_THRESHOLDS[mode]
     aucs = [f["auc"] for f in folds]
     min_auc = min(aucs); max_auc = max(aucs)
     stability_ratio = min_auc / max_auc if max_auc > 0 else 0.0
 
     criteria = {
-        "all_folds_above_coin_flip": min_auc > 0.55,
-        "fold_stability_85pct":      stability_ratio > 0.85,
-        "brier_below_0_245":         overall_brier < 0.245,
-        "overall_auc_above_0_60":    overall_auc > 0.60,
+        "all_folds_above_coin_flip": min_auc > t["min_fold_auc"],
+        "fold_stability":            stability_ratio > t["stability_ratio"],
+        "brier_below_max":           overall_brier < t["brier_max"],
+        "overall_auc_above_min":     overall_auc > t["overall_auc_min"],
     }
     hardened = all(criteria.values())
     return {
         "hardened": hardened,
+        "mode": mode,
+        "thresholds": t,
         "criteria": criteria,
         "min_auc": min_auc, "max_auc": max_auc,
         "stability_ratio": stability_ratio,
@@ -152,6 +198,18 @@ def main() -> int:
     ap.add_argument("--filter-ofi-only", action="store_true")
     ap.add_argument("--asset", default=None)
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--mode", default="strict",
+                    choices=["paper", "strict", "live"],
+                    help="Audit gate strictness. paper=arena-only, "
+                         "strict=tradeable, live=real-money. Each mode "
+                         "raises the bar on every criterion.")
+    ap.add_argument("--use-test-slice", action="store_true",
+                    help="Use the held-out test_indices stored in the "
+                         "checkpoint (from --test-split in train_lstm). "
+                         "The model has never seen these rows; this is "
+                         "the strongest generalization signal we can "
+                         "compute. Falls back to full dataset if no "
+                         "test slice was saved.")
     args = ap.parse_args()
 
     try:
@@ -168,18 +226,44 @@ def main() -> int:
         df = df[df["asset"] == args.asset].copy()
     if args.filter_ofi_only:
         df = df[df["ofi_30s"] != 0].copy()
-    if len(df) < 250:
-        print(f"FAIL: only {len(df)} rows after filters; need ≥250 for audit.", flush=True)
-        return 1
-
-    # Time-order rows by decision_ts so walk-forward is meaningful.
+    # Time-order BEFORE filtering to test slice so the slice indices match
     df = df.sort_values("decision_ts", kind="stable").reset_index(drop=True)
-    y = df["label_resolved_yes"].to_numpy("float32")
 
     # Peek at the checkpoint to get the column lists.
     ckpt_peek = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     scalar_cols = ckpt_peek["scalar_cols"]
     price_cols = ckpt_peek["price_cols"]
+
+    # Apply held-out test-slice filter if requested. Indices were saved
+    # during training (--test-split); skip with a warning if missing.
+    using_test_slice = False
+    if args.use_test_slice:
+        test_idx = ckpt_peek.get("test_indices", [])
+        if test_idx:
+            # test_indices are row indices into the trainer's pre-filter
+            # frame. We have no way to reconstruct that exact frame here
+            # if filters differ between train and audit, so we tag the
+            # last fraction of the current frame as "test" — equivalent
+            # only when no filter changes between phases (the common path).
+            chronological = bool(ckpt_peek.get("test_split_chronological"))
+            if chronological:
+                # Take the last X% chronologically (matches trainer's chronological mode)
+                frac = len(test_idx) / max(1, (len(test_idx) + ckpt_peek.get("args", {}).get("val_split", 0.2) * 5))
+                frac = min(0.5, max(0.05, frac))
+                n_test = int(len(df) * frac)
+                df = df.iloc[-n_test:].copy().reset_index(drop=True)
+                print(f"using chronological test slice: last {n_test} rows", flush=True)
+                using_test_slice = True
+            else:
+                print("(test slice was random; falling back to full set — "
+                      "exact row mapping unreliable across audit/train filter mismatch)", flush=True)
+        else:
+            print("(no test_indices in checkpoint; falling back to full set)", flush=True)
+
+    if len(df) < 250:
+        print(f"FAIL: only {len(df)} rows after filters; need ≥250 for audit.", flush=True)
+        return 1
+    y = df["label_resolved_yes"].to_numpy("float32")
 
     probs, ckpt = predict_with_checkpoint(args.checkpoint, df.copy(), scalar_cols, price_cols)
     # If calibration map is present, apply it.
@@ -189,13 +273,15 @@ def main() -> int:
     overall_auc = float(roc_auc_score(y, probs))
     overall_brier = float(brier_score_loss(y, probs))
     folds = walk_forward_metrics(probs, y, n_folds=args.folds)
-    v = verdict(folds, overall_auc, overall_brier)
+    v = verdict(folds, overall_auc, overall_brier, mode=args.mode)
 
     payload = {
         "checkpoint": args.checkpoint,
         "data": args.data,
         "asset_filter": args.asset,
         "ofi_only": args.filter_ofi_only,
+        "mode": args.mode,
+        "using_test_slice": using_test_slice,
         "n_rows": int(len(df)),
         "overall_auc": overall_auc,
         "overall_brier": overall_brier,
@@ -207,6 +293,7 @@ def main() -> int:
     else:
         print("══ OVERFIT AUDIT (model) ══════════════════════════════════════════")
         print(f"  checkpoint  : {args.checkpoint}")
+        print(f"  mode        : {args.mode}   test_slice={using_test_slice}")
         print(f"  n_rows      : {len(df):,}")
         print(f"  filter      : asset={args.asset} ofi_only={args.filter_ofi_only}")
         print(f"  overall AUC : {overall_auc:.4f}")

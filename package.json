@@ -133,6 +133,8 @@
     "train:per-asset": "node -e \"require('child_process').spawnSync('train/.venv/Scripts/python.exe', ['train/train_per_asset.py', ...process.argv.slice(1)], {stdio:'inherit'})\" --",
     "train:calibrate": "node -e \"require('child_process').spawnSync('train/.venv/Scripts/python.exe', ['train/calibrate.py', ...process.argv.slice(1)], {stdio:'inherit'})\" --",
     "train:audit": "node -e \"require('child_process').spawnSync('train/.venv/Scripts/python.exe', ['train/audit_model.py', ...process.argv.slice(1)], {stdio:'inherit'})\" --",
+    "worker:gpu-oracle": "tsx scripts/worker-gpu-oracle.ts",
+    "worker:gpu-oracle:once": "tsx scripts/worker-gpu-oracle.ts --once",
     "train:cuda-check": "node -e \"require('child_process').spawnSync('train/.venv/Scripts/python.exe', ['train/cuda_check.py'], {stdio:'inherit'})\"",
     "scan:late-window-scalp": "tsx scripts/scan-late-window-scalp.ts",
     "worker:late-window-scalp-exec": "tsx scripts/worker-late-window-scalp-exec.ts",

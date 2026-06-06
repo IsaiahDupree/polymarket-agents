@@ -68,6 +68,13 @@ def main() -> int:
                          "Ensures train + val see the same temporal regimes; "
                          "fixes the symptom where val is dominated by one "
                          "time window the model never trained on.")
+    ap.add_argument("--test-split", type=float, default=0.0,
+                    help="Hold out an extra slice that the trainer NEVER "
+                         "sees (no early-stop, no calibration, no model "
+                         "selection). Saves test indices into the "
+                         "checkpoint as `test_indices` so audit_model.py "
+                         "can score honestly on rows the model has never "
+                         "looked at. Recommended: 0.10 (10%%).")
     args = ap.parse_args()
 
     try:
@@ -139,6 +146,41 @@ def main() -> int:
     y = df["label_resolved_yes"].to_numpy(dtype=np.float32)
 
     n = len(df)
+    # Optionally carve off a TEST slice that no part of training touches.
+    # Done BEFORE the train/val split so the test set is contiguous wrt
+    # time when time-stratified mode is on (last 10% chronologically =
+    # the hardest generalization test).
+    test_idx_save: list[int] = []
+    if args.test_split > 0:
+        if args.time_stratified_split:
+            df_sorted = df.sort_values("decision_ts", kind="stable").reset_index(drop=True)
+            # Take the chronologically LATEST rows as test — strict
+            # generalization-to-future-data check.
+            n_test = int(n * args.test_split)
+            test_indices = list(range(n - n_test, n))
+            df = df_sorted
+        else:
+            np.random.seed(args.seed)
+            shuffled = np.random.permutation(n).tolist()
+            n_test = int(n * args.test_split)
+            test_indices = shuffled[:n_test]
+        test_idx_save = list(map(int, test_indices))
+        test_mask = np.zeros(n, dtype=bool)
+        test_mask[test_indices] = True
+        df_test = df.iloc[test_mask].copy()
+        df = df.iloc[~test_mask].copy().reset_index(drop=True)
+        print(f"held-out test slice: {len(df_test)} rows (never used in training)", flush=True)
+        n = len(df)
+        # Recompute features on the post-test-split frame
+        for c in price_cols + scalar_cols:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+        X_seq = df[price_cols].to_numpy(dtype=np.float32).reshape(-1, actual_lookback, 1)
+        X_sca_raw = df[scalar_cols].to_numpy(dtype=np.float32)
+        sca_mean = X_sca_raw.mean(axis=0, keepdims=True)
+        sca_std = X_sca_raw.std(axis=0, keepdims=True) + 1e-6
+        X_sca = (X_sca_raw - sca_mean) / sca_std
+        y = df["label_resolved_yes"].to_numpy(dtype=np.float32)
+
     if args.time_stratified_split:
         # Sort by decision_ts so chronological order is canonical, then
         # take every K-th row for val (K = round(1/val_split)). This
@@ -264,6 +306,8 @@ def main() -> int:
                 "scalar_cols": scalar_cols,
                 "price_cols": price_cols,
                 "lookback": actual_lookback,
+                "test_indices": test_idx_save,
+                "test_split_chronological": args.time_stratified_split and args.test_split > 0,
             }, args.out)
             print(f"  saved checkpoint → {args.out}", flush=True)
         else:
