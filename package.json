@@ -181,7 +181,7 @@
     "health": "tsx scripts/health.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.98.0",
+    "@anthropic-ai/sdk": "^0.82.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@polymarket/clob-client": "^4.21.0",
     "@polymarket/clob-client-v2": "^1.0.6",
