@@ -1,0 +1,315 @@
+import Database from "better-sqlite3";
+import { mkdirSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Anchor file-system paths to the workspace ROOT, not process.cwd().
+// `npm run -w @polymarket-agents/web` invokes next dev with cwd=apps/web/,
+// so anything resolved against cwd ends up at apps/web/src/lib/db/... which
+// doesn't exist. This file lives at <root>/src/lib/db/client.ts, so going up
+// 3 levels from its dir reaches the workspace root reliably.
+const __thisFile = fileURLToPath(import.meta.url);
+const REPO_ROOT = resolve(dirname(__thisFile), "..", "..", "..");
+
+const DB_PATH = process.env.POLYMARKET_DB_PATH ?? resolve(REPO_ROOT, "data", "polymarket.db");
+const SCHEMA_PATH = resolve(REPO_ROOT, "src", "lib", "db", "schema.sql");
+
+let cached: Database.Database | null = null;
+
+export function db(): Database.Database {
+  if (cached) return cached;
+  mkdirSync(dirname(DB_PATH), { recursive: true });
+  const handle = new Database(DB_PATH);
+  handle.pragma("journal_mode = WAL");
+  handle.pragma("foreign_keys = ON");
+  // Wait up to 5s for a write lock instead of erroring with SQLITE_BUSY.
+  // The WS worker can burst 30+ writes/sec; without this, a concurrent
+  // arena:tick / worker:reconcile / scheduler job will collide and one
+  // process dies. WAL mode allows readers + 1 writer; busy_timeout makes
+  // the second writer wait its turn. (2026-05-25 worker:realtime crash:
+  // 200K writes succeeded, 200,001st lost to BUSY because the tick ran
+  // simultaneously.)
+  // 2026-05-30: bumped to 30s. arena:tick can hold a write txn for 30s+ when
+  // it's iterating 24 elites; with the staged-stake workers also writing
+  // (graduate, stake-promoter), 5s wasn't enough headroom on a busy day.
+  handle.pragma("busy_timeout = 30000");
+  const schema = readFileSync(SCHEMA_PATH, "utf8");
+  handle.exec(schema);
+  runLightMigrations(handle);
+  cached = handle;
+  return handle;
+}
+
+/**
+ * Idempotent runtime migrations for changes that SQLite can't express with
+ * `CREATE TABLE IF NOT EXISTS` (which silently keeps the old shape on
+ * existing DBs). Each step checks `pragma_table_info` first so it's safe to
+ * run on every startup.
+ */
+function runLightMigrations(handle: Database.Database): void {
+  const hasColumn = (table: string, col: string): boolean => {
+    const row = handle.prepare(
+      `SELECT 1 FROM pragma_table_info(?) WHERE name = ?`,
+    ).get(table, col);
+    return !!row;
+  };
+  // 2026-05-26: extend cross_venue_arbs for Kalshi sister-venue pairings.
+  // ADD COLUMN is conditional; the index is created unconditionally because
+  // IF NOT EXISTS makes it idempotent on fresh DBs (where the column came in
+  // via schema.sql) and old DBs (where we just added it via ALTER TABLE).
+  if (!hasColumn("cross_venue_arbs", "kalshi_ticker")) {
+    handle.exec(`ALTER TABLE cross_venue_arbs ADD COLUMN kalshi_ticker TEXT;`);
+  }
+  handle.exec(
+    `CREATE INDEX IF NOT EXISTS idx_cross_venue_kalshi
+       ON cross_venue_arbs(kalshi_ticker) WHERE kalshi_ticker IS NOT NULL;`,
+  );
+
+  // 2026-05-26: elite preservation. ALTER first (column may be missing on
+  // pre-existing DBs), then create the index — schema.sql can't safely create
+  // the index because it would fail on old DBs before the ALTER runs.
+  if (!hasColumn("paper_agents", "is_elite")) {
+    handle.exec(`ALTER TABLE paper_agents ADD COLUMN is_elite INTEGER NOT NULL DEFAULT 0;`);
+  }
+  handle.exec(
+    `CREATE INDEX IF NOT EXISTS idx_paper_agents_elite ON paper_agents(is_elite, alive);`,
+  );
+
+  // 2026-05-26: poly_binaries.event_slug for embedding the official
+  // Polymarket iframe on /binaries (https://embed.polymarket.com/market?market=<slug>).
+  if (!hasColumn("poly_binaries", "event_slug")) {
+    handle.exec(`ALTER TABLE poly_binaries ADD COLUMN event_slug TEXT;`);
+  }
+
+  // 2026-05-26: drop the FK constraints on order_events.agent_id/capsule_id.
+  // The schema's intent is "deliberately NO foreign keys" so a rejection log
+  // entry can be written even when the referenced row is missing (e.g. paper
+  // agents have id-space separate from `agents` table). Older DBs were
+  // created with FKs in place; rebuild the table without them, preserving
+  // all existing rows.
+  const orderEventsFks = handle.prepare(`PRAGMA foreign_key_list(order_events)`).all() as Array<{ from: string }>;
+  if (orderEventsFks.length > 0) {
+    handle.exec(`
+      CREATE TABLE IF NOT EXISTS order_events_new (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        seq             INTEGER NOT NULL UNIQUE,
+        event           TEXT NOT NULL,
+        venue           TEXT NOT NULL,
+        client_order_id TEXT NOT NULL,
+        broker_order_id TEXT,
+        capsule_id      TEXT,
+        agent_id        INTEGER,
+        symbol          TEXT,
+        side            TEXT,
+        qty             REAL,
+        price           REAL,
+        status          TEXT,
+        error           TEXT,
+        metadata_json   TEXT NOT NULL DEFAULT '{}',
+        prev_hash       TEXT NOT NULL DEFAULT '',
+        hash            TEXT NOT NULL,
+        created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO order_events_new SELECT * FROM order_events;
+      DROP TABLE order_events;
+      ALTER TABLE order_events_new RENAME TO order_events;
+      CREATE INDEX IF NOT EXISTS idx_order_events_coid ON order_events(client_order_id);
+      CREATE INDEX IF NOT EXISTS idx_order_events_venue_seq ON order_events(venue, seq);
+      CREATE INDEX IF NOT EXISTS idx_order_events_created ON order_events(created_at DESC);
+    `);
+  }
+
+  // 2026-05-27 (Phase 6): capsule diversity profile columns. Additive, all
+  // nullable — existing capsules continue to work without these populated.
+  // Populated by scripts/infer-capsule-diversity.ts post-migration.
+  for (const [col, ddl] of [
+    ["strategy_family",        "strategy_family TEXT"],
+    ["asset_class",            "asset_class TEXT"],
+    ["allowed_assets_json",    "allowed_assets_json TEXT"],
+    ["time_horizon",           "time_horizon TEXT"],
+    ["regime_dependency",      "regime_dependency TEXT"],
+    ["directional_bias",       "directional_bias TEXT"],
+    ["diversity_profile_json", "diversity_profile_json TEXT"],
+    ["diversity_confidence",   "diversity_confidence TEXT NOT NULL DEFAULT 'inferred'"],
+  ] as const) {
+    if (!hasColumn("capsules", col)) {
+      handle.exec(`ALTER TABLE capsules ADD COLUMN ${ddl};`);
+    }
+  }
+  handle.exec(
+    `CREATE INDEX IF NOT EXISTS idx_capsules_strategy_family ON capsules(strategy_family) WHERE strategy_family IS NOT NULL;`,
+  );
+  handle.exec(
+    `CREATE INDEX IF NOT EXISTS idx_capsules_asset_class ON capsules(asset_class) WHERE asset_class IS NOT NULL;`,
+  );
+
+  // 2026-05-30: Twitter-article triage workbench (incoming_articles +
+  // article_gap_reports + article_todos). Workflow:
+  //   1. Operator pastes a twitter thread → row in incoming_articles.
+  //   2. /articles/[id] page renders body. Operator clicks "Generate gap
+  //      report" → LLM call writes article_gap_reports row.
+  //   3. Gap report's suggested_next_steps seed article_todos rows that the
+  //      operator ticks off as work lands. Only one article is `is_current_focus`
+  //      at a time (enforced in queries, not via UNIQUE — we want toggling to
+  //      be a single UPDATE, not a transaction).
+  handle.exec(`
+    CREATE TABLE IF NOT EXISTS incoming_articles (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      source            TEXT NOT NULL,
+      url               TEXT,
+      title             TEXT NOT NULL,
+      body_md           TEXT NOT NULL,
+      frontmatter_json  TEXT NOT NULL DEFAULT '{}',
+      status            TEXT NOT NULL DEFAULT 'new'
+                          CHECK(status IN ('new','triaging','developing','shipped','parked')),
+      is_current_focus  INTEGER NOT NULL DEFAULT 0,
+      created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_articles_status ON incoming_articles(status);
+    CREATE INDEX IF NOT EXISTS idx_articles_focus ON incoming_articles(is_current_focus) WHERE is_current_focus = 1;
+
+    CREATE TABLE IF NOT EXISTS article_gap_reports (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      article_id    INTEGER NOT NULL REFERENCES incoming_articles(id) ON DELETE CASCADE,
+      body_md       TEXT NOT NULL,
+      report_json   TEXT NOT NULL DEFAULT '{}',
+      model         TEXT NOT NULL,
+      source        TEXT NOT NULL DEFAULT 'llm'
+                      CHECK(source IN ('llm','human','seed')),
+      generated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_gap_reports_article ON article_gap_reports(article_id, generated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS article_todos (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      article_id    INTEGER NOT NULL REFERENCES incoming_articles(id) ON DELETE CASCADE,
+      label         TEXT NOT NULL,
+      related_path  TEXT,
+      status        TEXT NOT NULL DEFAULT 'open'
+                      CHECK(status IN ('open','in_progress','done','wont_do')),
+      created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      completed_at  TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_todos_article ON article_todos(article_id, status);
+
+    -- 2026-05-30: cross-link from strategies (or arbitrary code modules) back
+    -- to the article(s) they were inspired by. Composite PK lets one strategy
+    -- cite multiple articles (e.g., a fair-value Markov scanner blends ideas
+    -- from Ricker + Alex). The role column distinguishes primary inspiration
+    -- from supporting references. The module_path column is a fallback for
+    -- tracking non-strategy artifacts (e.g., a quant module like
+    -- becker-calibration.ts that's used across strategies — strategy_id can
+    -- be NULL in that case).
+    CREATE TABLE IF NOT EXISTS strategy_article_sources (
+      strategy_id   INTEGER REFERENCES strategies(id) ON DELETE CASCADE,
+      module_path   TEXT,
+      article_id    INTEGER NOT NULL REFERENCES incoming_articles(id) ON DELETE CASCADE,
+      role          TEXT NOT NULL DEFAULT 'primary'
+                      CHECK(role IN ('primary','supporting','calibration','execution')),
+      notes         TEXT,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      CHECK (strategy_id IS NOT NULL OR module_path IS NOT NULL)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_sas_unique
+      ON strategy_article_sources(
+        COALESCE(strategy_id, -1),
+        COALESCE(module_path, ''),
+        article_id,
+        role
+      );
+    CREATE INDEX IF NOT EXISTS idx_sas_article ON strategy_article_sources(article_id);
+    CREATE INDEX IF NOT EXISTS idx_sas_strategy ON strategy_article_sources(strategy_id) WHERE strategy_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_sas_module ON strategy_article_sources(module_path) WHERE module_path IS NOT NULL;
+  `);
+
+  // 2026-05-31: Polymarket API call cache. Their public endpoints (Gamma
+  // /markets, /events; CLOB /book, /price) don't preserve historical data,
+  // so every call we make is a free sample we'd otherwise lose. The recorder
+  // (src/lib/api-cache/recorder.ts) registers a response logger with the
+  // adapter and persists every successful response here. Backtests later
+  // read from this table instead of re-hitting Polymarket — gives us a
+  // private archive of the live data stream.
+  handle.exec(`
+    CREATE TABLE IF NOT EXISTS api_call_cache (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      source          TEXT NOT NULL,           -- "polymarket-gamma" | "polymarket-clob" | "polymarket-data" | "polymarket-relayer"
+      endpoint        TEXT NOT NULL,           -- "/markets" | "/events" | "/book" | "/price" etc.
+      query_string    TEXT,                    -- raw query (no leading ?). Indexed for lookup.
+      request_method  TEXT NOT NULL DEFAULT 'GET',
+      response_status INTEGER NOT NULL,
+      response_size_bytes INTEGER NOT NULL,
+      response_body   TEXT NOT NULL,           -- the raw JSON body — keep as text for replay fidelity
+      fetched_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_apicache_endpoint_time
+      ON api_call_cache(source, endpoint, fetched_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_apicache_query
+      ON api_call_cache(endpoint, query_string) WHERE query_string IS NOT NULL;
+  `);
+
+  // 2026-05-31: book_snapshots — fast-cadence (1s) CLOB top-of-book captures.
+  // Drives the Cont-Kukanov-Stoikov OFI calculator at decide time: the
+  // microstructure module reads the most recent N snapshots for a token
+  // and computes order-flow imbalance directly from level-1 changes.
+  //
+  // Why a separate table from api_call_cache: that one stores raw response
+  // bodies for general replay. This one stores derived top-of-book numbers
+  // for hot decide-time lookups — strategies need O(1) "give me the last
+  // 30 seconds of bid/ask for token X", which a typed columnar table
+  // serves much faster than parsing JSON bodies on every call.
+  //
+  // Retention: pruned aggressively (default 24h) — OFI strategies care
+  // only about the last few seconds; the api_call_cache keeps the long
+  // tail for backtesting.
+  handle.exec(`
+    CREATE TABLE IF NOT EXISTS book_snapshots (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      token_id        TEXT NOT NULL,
+      ts_unix_ms      INTEGER NOT NULL,        -- wall clock in ms when the poll returned
+      bid_price       REAL,                    -- best bid; null when book empty on bid side
+      bid_size        REAL,
+      ask_price       REAL,                    -- best ask; null when book empty on ask side
+      ask_size        REAL,
+      midpoint        REAL,                    -- (bid+ask)/2 when both sides present
+      spread          REAL,                    -- ask - bid (only when both present)
+      total_bid_depth REAL,                    -- sum of top-N bid sizes from raw book
+      total_ask_depth REAL,
+      n_bid_levels    INTEGER,
+      n_ask_levels    INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_book_snap_token_time
+      ON book_snapshots(token_id, ts_unix_ms DESC);
+    CREATE INDEX IF NOT EXISTS idx_book_snap_time
+      ON book_snapshots(ts_unix_ms);
+  `);
+
+  // 2026-05-31: overfit_verdicts — daily output of the audit:overfit run.
+  // Each row captures a single cohort × snapshot, persisting the hardenVerdict
+  // composite gate (PBO, DSR, median OOS) so the operator dashboard can show
+  // trend lines instead of just the latest CLI output. The "scope" column
+  // narrows to a specific (kind, asset) when we run per-bucket audits.
+  handle.exec(`
+    CREATE TABLE IF NOT EXISTS overfit_verdicts (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts_iso          TEXT NOT NULL DEFAULT (datetime('now')),
+      scope           TEXT NOT NULL DEFAULT 'global',   -- 'global' | 'kind:markov_persistence' | 'kind:markov_persistence:BTC' etc.
+      n_agents        INTEGER NOT NULL,
+      n_trades        INTEGER NOT NULL,
+      pbo             REAL,                              -- López de Prado probability of backtest overfit
+      dsr             REAL,                              -- Bailey-LdP deflated Sharpe (probability form)
+      median_oos      REAL,                              -- median out-of-sample return across folds
+      hardened        INTEGER NOT NULL DEFAULT 0,        -- 1 = passes the composite gate
+      details_json    TEXT NOT NULL DEFAULT '{}'         -- full verdict payload for drill-down
+    );
+    CREATE INDEX IF NOT EXISTS idx_overfit_scope_time
+      ON overfit_verdicts(scope, ts_iso DESC);
+  `);
+}
+
+export function closeDb() {
+  if (cached) {
+    cached.close();
+    cached = null;
+  }
+}
