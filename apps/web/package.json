@@ -1,0 +1,14 @@
+{
+  "name": "@polymarket-agents/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --turbo",
+    "dev:webpack": "next dev",
+    "dev:test": "next dev --turbo -p 3001",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  }
+}
